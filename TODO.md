@@ -2,12 +2,16 @@
 
 ## Planned Features
 
+- [ ] **Consent Mode section** — Dedicated section showing Google Consent Mode v2 status: `ad_storage`, `analytics_storage`, `ad_user_data`, `ad_personalization` states (granted/denied), detect `gcs` param in GA4 requests and `gdpr` / `gdpr_consent` in Meta requests, show default vs updated consent, flag when consent is denied but events still fire
+- [ ] **Cross-event item ID validation** — In insights, compare item IDs across different funnel stages (not just across platforms within a stage). Example: detect if `item_id` in `view_item` (GA4) differs from `item_id` in `add_to_cart` (GAds or Meta). Check all combinations: view→cart, cart→checkout, checkout→purchase across all platform pairs
+- [ ] **BigQuery real-time stream** — Stream captured events in real-time to a BigQuery table for historical analysis, dashboarding, and auditing. Configure project/dataset/table in settings, use BigQuery Storage Write API or insertAll
+- [ ] **Group conversions by label** — In the Google Ads conversion view, group conversion events by `conversion_label`. Show each label as a collapsible section with its events, counts, and total value. Useful for seeing which conversion actions fired vs which didn't
+- [ ] **Multiple pixel detection** — Detect when a site has multiple tracking IDs for the same platform (e.g., 2 GA4 measurement IDs, 3 Meta Pixels, multiple AW- conversion IDs). Show a warning/info section listing all detected IDs per platform with event counts for each
 - [ ] **TikTok Pixel support** — Intercept TikTok Pixel (`analytics.tiktok.com`) events, parse ecommerce data, add as 4th platform column
 - [ ] **Pinterest Tag support** — Intercept Pinterest conversion tracking events
 - [ ] **Snapchat Pixel support** — Intercept Snap Pixel events
 - [ ] **LinkedIn Insight Tag support** — Intercept LinkedIn conversion events
 - [ ] **Server-side event validation** — Compare client-side events with server-side (CAPI) events when both are present
-- [ ] **Consent mode detection** — Show whether Google Consent Mode v2 is active and which consent states are set
 - [ ] **DataLayer inspector** — Show `dataLayer.push()` events alongside network requests
 - [ ] **GTM container detection** — Identify which GTM containers are loaded and their IDs
 - [ ] **Event diffing** — Compare two events side-by-side to spot differences
