@@ -16,6 +16,17 @@
   let activeSource = "all";
   let checkViewActive = false;
   let insightsViewActive = false;
+  let consentViewActive = false;
+  let pixelViewActive = false;
+
+  /** Identity fingerprint — mirrors background.js identityFingerprint(). */
+  function _identityFP(e) {
+    const p = e.payload;
+    if (e.source === "ga4")  return `ga4|${p.measurement_id}|${p.event_name}`;
+    if (e.source === "gads") return `gads|${p.conversion_id}|${p.conversion_label}|${p.event_name}`;
+    if (e.source === "fb")   return `fb|${p.pixel_id}|${p.event_name}`;
+    return e.url;
+  }
 
   // --- Platform icons (shared between card rendering, check matrix, insights) ---
   const GA4_ICON = '<svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="1" width="3" height="14" rx="1"/></svg>';
@@ -25,6 +36,8 @@
   const CHECK_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>';
   const LIST_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
   const INSIGHTS_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>';
+  const CONSENT_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+  const PIXEL_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/><path d="M12 2a10 10 0 0 0-10 10"/><path d="M12 6a6 6 0 0 0-6 6"/></svg>';
 
   // --- Check matrix config ---
   const CHECK_MATRIX = [
@@ -63,7 +76,10 @@
   const sourceButtons = document.querySelectorAll(".source-btn");
   const checkViewBtn = document.getElementById("checkViewBtn");
   const insightsViewBtn = document.getElementById("insightsViewBtn");
+  const consentViewBtn = document.getElementById("consentViewBtn");
+  const pixelViewBtn = document.getElementById("pixelViewBtn");
   const sourceToggle = document.querySelector(".source-toggle");
+  const filtersBar = document.querySelector(".filters");
 
   const FILTER_MAP = {
     all: null,
@@ -108,12 +124,25 @@
   // ------------------------------------------------------------------
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === "NEW_EVENT" && msg.tabId === currentTabId) {
+    if (msg.tabId !== currentTabId) return;
+    if (msg.type === "NEW_EVENT") {
       events.push(msg.event);
       render();
-      if (!checkViewActive && !insightsViewActive) {
+      if (!checkViewActive && !insightsViewActive && !consentViewActive && !pixelViewActive) {
         requestAnimationFrame(() => { eventList.scrollTop = 0; });
       }
+    } else if (msg.type === "REPLACE_EVENT") {
+      const fp = _identityFP(msg.event);
+      // Find the sparser match to replace (lowest event_params count)
+      let bestIdx = -1, bestScore = Infinity;
+      for (let i = 0; i < events.length; i++) {
+        if (_identityFP(events[i]) !== fp) continue;
+        const ep = events[i].payload.event_params || {};
+        const s = Object.keys(ep).length + (events[i].payload.items || []).length;
+        if (s < bestScore) { bestScore = s; bestIdx = i; }
+      }
+      if (bestIdx >= 0) events[bestIdx] = msg.event; else events.push(msg.event);
+      render();
     }
   });
 
@@ -129,6 +158,8 @@
 
       if (checkViewActive) exitCheckView();
       if (insightsViewActive) exitInsightsView();
+      if (consentViewActive) exitConsentView();
+      if (pixelViewActive) exitPixelView();
 
       render();
     });
@@ -146,6 +177,8 @@
   // --- Check Events toggle ---
   checkViewBtn.addEventListener("click", () => {
     if (insightsViewActive) exitInsightsView();
+    if (consentViewActive) exitConsentView();
+    if (pixelViewActive) exitPixelView();
 
     checkViewActive = !checkViewActive;
     checkViewBtn.classList.toggle("active", checkViewActive);
@@ -174,6 +207,8 @@
   // --- Insights toggle ---
   insightsViewBtn.addEventListener("click", () => {
     if (checkViewActive) exitCheckView();
+    if (consentViewActive) exitConsentView();
+    if (pixelViewActive) exitPixelView();
 
     insightsViewActive = !insightsViewActive;
     insightsViewBtn.classList.toggle("active", insightsViewActive);
@@ -197,6 +232,70 @@
     insightsViewBtn.classList.remove("active");
     insightsViewBtn.innerHTML = INSIGHTS_ICON_SVG + " Insights";
     sourceToggle.classList.remove("hidden");
+  }
+
+  // --- Consent toggle ---
+  consentViewBtn.addEventListener("click", () => {
+    if (checkViewActive) exitCheckView();
+    if (insightsViewActive) exitInsightsView();
+    if (pixelViewActive) exitPixelView();
+
+    consentViewActive = !consentViewActive;
+    consentViewBtn.classList.toggle("active", consentViewActive);
+    consentViewBtn.innerHTML = consentViewActive
+      ? LIST_ICON_SVG + " Event List"
+      : CONSENT_ICON_SVG + " Consent";
+
+    sourceToggle.classList.toggle("hidden", consentViewActive);
+    filtersBar.classList.toggle("hidden", consentViewActive);
+
+    if (consentViewActive) {
+      activeSource = "all";
+      sourceButtons.forEach((b) => b.classList.remove("active"));
+      document.querySelector('.source-btn[data-source="all"]').classList.add("active");
+    }
+
+    render();
+  });
+
+  function exitConsentView() {
+    consentViewActive = false;
+    consentViewBtn.classList.remove("active");
+    consentViewBtn.innerHTML = CONSENT_ICON_SVG + " Consent";
+    sourceToggle.classList.remove("hidden");
+    filtersBar.classList.remove("hidden");
+  }
+
+  // --- Pixel Inspector toggle ---
+  pixelViewBtn.addEventListener("click", () => {
+    if (checkViewActive) exitCheckView();
+    if (insightsViewActive) exitInsightsView();
+    if (consentViewActive) exitConsentView();
+
+    pixelViewActive = !pixelViewActive;
+    pixelViewBtn.classList.toggle("active", pixelViewActive);
+    pixelViewBtn.innerHTML = pixelViewActive
+      ? LIST_ICON_SVG + " Event List"
+      : PIXEL_ICON_SVG + " Pixels";
+
+    sourceToggle.classList.toggle("hidden", pixelViewActive);
+    filtersBar.classList.toggle("hidden", pixelViewActive);
+
+    if (pixelViewActive) {
+      activeSource = "all";
+      sourceButtons.forEach((b) => b.classList.remove("active"));
+      document.querySelector('.source-btn[data-source="all"]').classList.add("active");
+    }
+
+    render();
+  });
+
+  function exitPixelView() {
+    pixelViewActive = false;
+    pixelViewBtn.classList.remove("active");
+    pixelViewBtn.innerHTML = PIXEL_ICON_SVG + " Pixels";
+    sourceToggle.classList.remove("hidden");
+    filtersBar.classList.remove("hidden");
   }
 
   clearBtn.addEventListener("click", () => {
@@ -236,6 +335,16 @@
   function render() {
     countAll.textContent = events.length;
 
+    if (pixelViewActive) {
+      renderPixelView();
+      return;
+    }
+
+    if (consentViewActive) {
+      renderConsentView();
+      return;
+    }
+
     if (insightsViewActive) {
       renderInsightsView();
       return;
@@ -271,6 +380,344 @@
     eventList.querySelectorAll(".copy-btn").forEach((b) =>
       b.addEventListener("click", onCopyClick)
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Consent View
+  // ------------------------------------------------------------------
+
+  const CONSENT_CATEGORIES = [
+    { key: "ad_storage", label: "ad_storage" },
+    { key: "analytics_storage", label: "analytics_storage" },
+    { key: "ad_user_data", label: "ad_user_data" },
+    { key: "ad_personalization", label: "ad_personalization" },
+  ];
+
+  const CONSENT_PLATFORMS = [
+    { key: "ga4", label: "GA4", icon: GA4_ICON, color: "--purple-light" },
+    { key: "gads", label: "Google Ads", icon: GADS_ICON, color: "--gold" },
+  ];
+
+  function getLatestConsent(source) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].source === source && events[i].consent && events[i].consent.gcd) {
+        return events[i].consent;
+      }
+    }
+    return null;
+  }
+
+  function getAllConsentSnapshots(source) {
+    const snapshots = [];
+    for (const evt of events) {
+      if (evt.source === source && evt.consent && evt.consent.gcd) {
+        snapshots.push({ consent: evt.consent, timestamp: evt.timestamp, eventName: evt.eventName });
+      }
+    }
+    return snapshots;
+  }
+
+  function consentPillHTML(state) {
+    const labels = { granted: "Granted", denied: "Denied", not_set: "Not Set", unknown: "Unknown" };
+    const cls = state === "granted" ? "granted" : state === "denied" ? "denied" : "unknown";
+    return '<span class="cv-pill cv-pill-' + cls + '">' + (labels[state] || "Unknown") + "</span>";
+  }
+
+  /**
+   * GCD update codes — these letters indicate the consent state resulted
+   * from a consent update (user interacted with the CMP banner).
+   * r = default denied → updated to granted
+   * n = granted (update only)
+   * v = granted (default + update)
+   */
+  const GCD_UPDATE_GRANTED = new Set(["r", "n", "v"]);
+
+  function detectConsentChanges() {
+    const changes = [];
+    for (const plat of CONSENT_PLATFORMS) {
+      const snaps = getAllConsentSnapshots(plat.key);
+      if (snaps.length < 2) continue;
+      for (let i = 1; i < snaps.length; i++) {
+        for (const cat of CONSENT_CATEGORIES) {
+          const prev = snaps[i - 1].consent.gcd[cat.key];
+          const curr = snaps[i].consent.gcd[cat.key];
+          if (!prev || !curr || prev.state === curr.state) continue;
+
+          // Skip when previous had no consent signals (consent mode not loaded yet)
+          if (prev.state === "not_set" || curr.state === "not_set") continue;
+
+          // Skip normal CMP flow: denied → granted via consent update
+          if (prev.state === "denied" && curr.state === "granted" &&
+              curr.code && GCD_UPDATE_GRANTED.has(curr.code.toLowerCase())) continue;
+
+          changes.push({
+            platform: plat.label,
+            category: cat.label,
+            from: prev.state,
+            to: curr.state,
+            eventName: snaps[i].eventName,
+          });
+        }
+      }
+    }
+    return changes;
+  }
+
+  // ------------------------------------------------------------------
+  // Pixel Inspector
+  // ------------------------------------------------------------------
+
+  function collectPixelData() {
+    const platforms = {
+      ga4:  { ids: {} },
+      gads: { ids: {} },
+      fb:   { ids: {} },
+    };
+
+    for (const evt of events) {
+      const src = evt.source;
+      if (!platforms[src]) continue;
+
+      let id = null;
+      if (src === "ga4")  id = evt.payload.measurement_id;
+      if (src === "gads") id = evt.payload.conversion_id;
+      if (src === "fb")   id = evt.payload.pixel_id;
+
+      if (!id) continue;
+
+      if (!platforms[src].ids[id]) {
+        platforms[src].ids[id] = {
+          endpoints: new Set(),
+          eventCount: 0,
+          eventNames: new Set(),
+          conversionLabels: new Set(),
+        };
+      }
+
+      const entry = platforms[src].ids[id];
+      entry.eventCount++;
+
+      try {
+        entry.endpoints.add(new URL(evt.url).hostname);
+      } catch (_) { /* malformed URL */ }
+
+      if (evt.payload.event_name) {
+        entry.eventNames.add(evt.payload.event_name);
+      }
+
+      if (src === "gads" && evt.payload.conversion_label) {
+        entry.conversionLabels.add(evt.payload.conversion_label);
+      }
+    }
+
+    return platforms;
+  }
+
+  function renderPixelView() {
+    const WARN_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+    const RADAR_SVG = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/><path d="M12 2a10 10 0 0 0-10 10"/><path d="M12 6a6 6 0 0 0-6 6"/></svg>';
+
+    emptyState.style.display = "none";
+
+    if (!events.length) {
+      eventList.innerHTML =
+        '<div class="pv-empty">' + RADAR_SVG +
+        '<p class="pv-empty-title">No events captured yet</p>' +
+        '<p class="pv-empty-text">Navigate to a page with tracking pixels to inspect detected IDs and endpoints.</p></div>';
+      return;
+    }
+
+    const data = collectPixelData();
+    const totalIds = Object.values(data).reduce((sum, p) => sum + Object.keys(p.ids).length, 0);
+
+    if (totalIds === 0) {
+      eventList.innerHTML =
+        '<div class="pv-empty">' + RADAR_SVG +
+        '<p class="pv-empty-title">No tracking IDs detected</p>' +
+        '<p class="pv-empty-text">Events were captured but no measurement IDs, conversion IDs, or pixel IDs could be extracted.</p></div>';
+      return;
+    }
+
+    let html = '<div class="pixel-view">';
+
+    for (const plat of PLATFORMS) {
+      const platData = data[plat.key];
+      const ids = Object.keys(platData.ids);
+      if (ids.length === 0) continue;
+
+      html += '<div class="pv-section">';
+
+      // Section header
+      html += '<div class="pv-section-header">';
+      html += '<span class="pv-platform-name" style="color:var(' + plat.color + ')">' + plat.icon + ' ' + plat.label + '</span>';
+      html += '<span class="pv-id-count">' + ids.length + ' ID' + (ids.length > 1 ? 's' : '') + '</span>';
+      html += '</div>';
+
+      // Multiple ID warning
+      if (ids.length > 1) {
+        html += '<div class="pv-warning">' + WARN_SVG + ' <span>Multiple ' + esc(plat.label) + ' IDs detected: <strong>' + ids.map(i => esc(i)).join(', ') + '</strong>. This may indicate misconfiguration or intentional multi-property tracking.</span></div>';
+      }
+
+      // ID cards
+      for (const id of ids) {
+        const info = platData.ids[id];
+        html += '<div class="pv-id-card">';
+        html += '<div class="pv-id-value">' + esc(id) + '</div>';
+
+        // Endpoints
+        html += '<div class="pv-id-meta"><span class="pv-meta-label">Endpoints</span>';
+        for (const ep of info.endpoints) {
+          html += '<span class="pv-endpoint">' + esc(ep) + '</span>';
+        }
+        html += '</div>';
+
+        // Events
+        html += '<div class="pv-id-meta"><span class="pv-meta-label">Events</span>' + info.eventCount + ' total (' + [...info.eventNames].map(n => esc(n)).join(', ') + ')</div>';
+
+        // GAds: conversion labels
+        if (plat.key === "gads" && info.conversionLabels.size > 0) {
+          html += '<div class="pv-id-meta"><span class="pv-meta-label">Labels</span>';
+          for (const label of info.conversionLabels) {
+            html += '<span class="pv-endpoint">' + esc(label) + '</span>';
+          }
+          html += '</div>';
+        }
+
+        html += '</div>';
+      }
+
+      html += '</div>';
+    }
+
+    html += '</div>';
+    eventList.innerHTML = html;
+  }
+
+  function renderConsentView() {
+    const ga4Consent = getLatestConsent("ga4");
+    const gadsConsent = getLatestConsent("gads");
+    const hasAny = ga4Consent || gadsConsent;
+
+    // Empty state
+    if (!events.length) {
+      eventList.innerHTML = '<div class="cv-empty"><div class="cv-empty-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><p class="cv-empty-title">No events captured yet</p><p class="cv-empty-text">Navigate to a page with Google tracking to see consent signals.</p></div>';
+      emptyState.style.display = "none";
+      return;
+    }
+
+    if (!hasAny) {
+      eventList.innerHTML = '<div class="cv-empty"><div class="cv-empty-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><p class="cv-empty-title">No consent signals detected</p><p class="cv-empty-text">The site may not have implemented Google Consent Mode v2, or no gcd/gcs parameters were found in the intercepted requests.</p></div>';
+      emptyState.style.display = "none";
+      return;
+    }
+
+    emptyState.style.display = "none";
+    let html = '<div class="consent-view">';
+
+    // --- Section 1: General Consent Status ---
+    html += '<div class="cv-section"><div class="cv-section-title">General Consent Status</div>';
+    for (const cat of CONSENT_CATEGORIES) {
+      const ga4State = ga4Consent && ga4Consent.gcd ? ga4Consent.gcd[cat.key]?.state : null;
+      const gadsState = gadsConsent && gadsConsent.gcd ? gadsConsent.gcd[cat.key]?.state : null;
+
+      const states = [ga4State, gadsState].filter(Boolean);
+      const unique = [...new Set(states)];
+
+      html += '<div class="cv-row"><span class="cv-category">' + cat.label + "</span>";
+      html += '<div class="cv-status">';
+
+      if (unique.length === 0) {
+        html += consentPillHTML("unknown");
+      } else if (unique.length === 1) {
+        html += consentPillHTML(unique[0]);
+      } else {
+        // Discrepancy
+        html += '<span class="cv-pill cv-pill-discrepancy">Discrepancy</span>';
+        html += '<span class="cv-discrepancy-detail">';
+        if (ga4State) html += '<span style="color:var(--purple-light)">GA4:</span> ' + consentPillHTML(ga4State) + " ";
+        if (gadsState) html += '<span style="color:var(--gold)">GAds:</span> ' + consentPillHTML(gadsState);
+        html += "</span>";
+      }
+
+      html += "</div></div>";
+    }
+    html += "</div>";
+
+    // --- Section 2: Platform Breakdown Grid ---
+    html += '<div class="cv-grid">';
+    // Header row
+    html += '<div class="cv-grid-corner"></div>';
+    for (const plat of CONSENT_PLATFORMS) {
+      html += '<div class="cv-grid-header" style="color:var(' + plat.color + ')">' + plat.icon + " " + plat.label + "</div>";
+    }
+    // Category rows
+    for (const cat of CONSENT_CATEGORIES) {
+      html += '<div class="cv-grid-label">' + cat.label + "</div>";
+      for (const plat of CONSENT_PLATFORMS) {
+        const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
+        const info = consent && consent.gcd ? consent.gcd[cat.key] : null;
+        html += '<div class="cv-grid-cell">';
+        if (info) {
+          html += consentPillHTML(info.state);
+          html += ' <span class="cv-code">(' + (info.code || "?") + ")</span>";
+          if (info.inherited) html += ' <span class="cv-code" title="Inherited from another consent category">↗</span>';
+        } else {
+          html += '<span class="cv-pill cv-pill-unknown">—</span>';
+        }
+        html += "</div>";
+      }
+    }
+    html += "</div>";
+
+    // --- Section 3: Consent Changes ---
+    const changes = detectConsentChanges();
+    if (changes.length) {
+      html += '<div class="cv-section"><div class="cv-section-title">Consent Changes During Session</div>';
+      const warnSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+      for (const c of changes) {
+        html += '<div class="cv-change-warning">' + warnSvg + " <span><strong>" + c.category + "</strong> changed from <strong>" + c.from + "</strong> → <strong>" + c.to + "</strong> on " + c.platform + " (" + c.eventName + ")</span></div>";
+      }
+      html += "</div>";
+    }
+
+    // --- Section 4: Raw Values ---
+    html += '<div class="cv-section"><div class="cv-section-title">Raw Consent Strings</div>';
+    for (const plat of CONSENT_PLATFORMS) {
+      const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
+      if (!consent) continue;
+
+      html += '<div class="cv-raw-block">';
+      html += '<div class="cv-raw-label" style="color:var(' + plat.color + ')">' + plat.label + "</div>";
+
+      if (consent.gcd) {
+        html += '<div class="cv-raw-value">' + escAttr(consent.gcd.raw) + '</div>';
+        html += '<div class="cv-raw-breakdown">';
+        for (const cat of CONSENT_CATEGORIES) {
+          const info = consent.gcd[cat.key];
+          if (info && info.code) {
+            html += "<span>" + cat.label + ":</span> " + info.code + " = " + info.meaning + "<br>";
+          }
+        }
+        html += "</div>";
+      }
+
+      if (consent.gcs) {
+        html += '<div style="margin-top:8px"><div class="cv-raw-value">' + escAttr(consent.gcs.raw) + ' <span class="cv-code">(gcs)</span></div>';
+        html += '<div class="cv-raw-breakdown">';
+        html += "<span>ad_storage:</span> " + consent.gcs.ad_storage + "<br>";
+        html += "<span>analytics_storage:</span> " + consent.gcs.analytics_storage;
+        html += "</div></div>";
+      }
+
+      html += "</div>";
+    }
+    html += "</div>";
+
+    // --- Section 5: Info Note ---
+    html += '<div class="cv-info-note"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>functionality_storage, security_storage, and personalization_storage are not transmitted in gcd/gcs parameters and cannot be detected from network requests.</span></div>';
+
+    html += "</div>";
+    eventList.innerHTML = html;
   }
 
   // ------------------------------------------------------------------
@@ -413,6 +860,103 @@
 
   function roundVal(v) {
     return v != null ? Math.round(v * 100) / 100 : null;
+  }
+
+  // ------------------------------------------------------------------
+  // Insights — Global Item ID Analysis
+  // ------------------------------------------------------------------
+
+  /** Scan ALL events and build platform → stage → Set<item_id>. */
+  function collectItemIdsByStage() {
+    const eventToStage = {};
+    for (const stage of INSIGHTS_STAGES) {
+      if (stage.key === "pageview") continue;
+      for (const name of stage.ga4) eventToStage["ga4|" + name] = stage.key;
+      for (const name of stage.gads) eventToStage["gads|" + name] = stage.key;
+      for (const name of stage.fb) eventToStage["fb|" + name] = stage.key;
+    }
+    const result = { ga4: {}, gads: {}, fb: {} };
+    for (const evt of events) {
+      const src = evt.source || "ga4";
+      const stageKey = eventToStage[src + "|" + evt.eventName];
+      if (!stageKey) continue;
+      const items = evt.payload.items || [];
+      if (!items.length) continue;
+      if (!result[src][stageKey]) result[src][stageKey] = new Set();
+      for (const item of items) {
+        const id = item.item_id;
+        if (id != null && String(id) !== "") result[src][stageKey].add(String(id));
+      }
+    }
+    return result;
+  }
+
+  /** Compare ID sets between two platforms using shared-stages logic. */
+  function compareItemIdSets(insights, labelA, stagesA, labelB, stagesB) {
+    const allStageKeys = new Set([...Object.keys(stagesA), ...Object.keys(stagesB)]);
+    const sharedStages = [];
+    for (const sk of allStageKeys) {
+      if (stagesA[sk] && stagesA[sk].size > 0 && stagesB[sk] && stagesB[sk].size > 0) {
+        sharedStages.push(sk);
+      }
+    }
+    if (sharedStages.length === 0) return;
+    const idsA = new Set();
+    const idsB = new Set();
+    for (const sk of sharedStages) {
+      for (const id of stagesA[sk]) idsA.add(id);
+      for (const id of stagesB[sk]) idsB.add(id);
+    }
+    const missingInB = [...idsA].filter((id) => !idsB.has(id));
+    const missingInA = [...idsB].filter((id) => !idsA.has(id));
+    if (missingInB.length === 0 && missingInA.length === 0) return;
+    if (missingInB.length > 0) {
+      insights.push({ severity: "warning", message: labelB + " missing ID(s) found in " + labelA + ": " + missingInB.join(", ") });
+    }
+    if (missingInA.length > 0) {
+      insights.push({ severity: "warning", message: labelA + " missing ID(s) found in " + labelB + ": " + missingInA.join(", ") });
+    }
+  }
+
+  /** Global cross-platform item ID analysis. */
+  function analyzeItemIds() {
+    const stageData = collectItemIdsByStage();
+    const perPlatform = {};
+    for (const plat of ["ga4", "gads", "fb"]) {
+      const allIds = new Set();
+      for (const sk of Object.keys(stageData[plat])) {
+        for (const id of stageData[plat][sk]) allIds.add(id);
+      }
+      perPlatform[plat] = { allIds: allIds, stageIds: stageData[plat] };
+    }
+    const hasAnyItems = perPlatform.ga4.allIds.size > 0 || perPlatform.gads.allIds.size > 0 || perPlatform.fb.allIds.size > 0;
+    if (!hasAnyItems) return { perPlatform: perPlatform, insights: [], maxSeverity: null, hasAnyItems: false };
+
+    const insights = [];
+    const activePlats = [];
+    if (perPlatform.ga4.allIds.size > 0) activePlats.push({ key: "ga4", label: "GA4", data: perPlatform.ga4 });
+    if (perPlatform.gads.allIds.size > 0) activePlats.push({ key: "gads", label: "GAds", data: perPlatform.gads });
+    if (perPlatform.fb.allIds.size > 0) activePlats.push({ key: "fb", label: "Meta", data: perPlatform.fb });
+
+    if (activePlats.length < 2) {
+      insights.push({ severity: "info", message: "Only " + activePlats[0].label + " has item data \u2014 no cross-platform comparison possible" });
+      return { perPlatform: perPlatform, insights: insights, maxSeverity: "info", hasAnyItems: true };
+    }
+
+    for (let i = 0; i < activePlats.length; i++) {
+      for (let j = i + 1; j < activePlats.length; j++) {
+        compareItemIdSets(insights, activePlats[i].label, activePlats[i].data.stageIds, activePlats[j].label, activePlats[j].data.stageIds);
+      }
+    }
+
+    const maxSeverity = insights.some((i) => i.severity === "error") ? "error"
+      : insights.some((i) => i.severity === "warning") ? "warning" : "ok";
+
+    if (insights.length === 0) {
+      insights.push({ severity: "ok", message: "All item IDs match across platforms" });
+    }
+
+    return { perPlatform: perPlatform, insights: insights, maxSeverity: maxSeverity, hasAnyItems: true };
   }
 
   function compareField(insights, field, labelA, valA, labelB, valB, sev) {
@@ -592,10 +1136,16 @@
 
   function renderInsightsView() {
     const results = INSIGHTS_STAGES.map((s) => analyzeStage(s));
+    const itemIdAnalysis = analyzeItemIds();
 
-    const errCount = results.filter((r) => r.maxSeverity === "error").length;
-    const warnCount = results.filter((r) => r.maxSeverity === "warning").length;
-    const okCount = results.filter((r) => r.maxSeverity === "ok").length;
+    let errCount = results.filter((r) => r.maxSeverity === "error").length;
+    let warnCount = results.filter((r) => r.maxSeverity === "warning").length;
+    let okCount = results.filter((r) => r.maxSeverity === "ok").length;
+    if (itemIdAnalysis.hasAnyItems) {
+      if (itemIdAnalysis.maxSeverity === "error") errCount++;
+      else if (itemIdAnalysis.maxSeverity === "warning") warnCount++;
+      else if (itemIdAnalysis.maxSeverity === "ok") okCount++;
+    }
 
     let h = '<div class="insights-view">';
 
@@ -682,6 +1232,11 @@
       h += '</div>';
     }
 
+    // Item IDs section — after stage cards, inside insStageCards
+    if (itemIdAnalysis.hasAnyItems) {
+      h += renderItemIdsCard(itemIdAnalysis);
+    }
+
     h += '</div>'; // close insStageCards
     h += '</div>'; // close insights-view
     emptyState.style.display = "none";
@@ -728,7 +1283,7 @@
     h += '</div>';
 
     // 5 skeleton stage cards
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       h += '<div class="ins-stage ins-skeleton-stage">';
       h += '<div class="ins-stage-header"><span class="ins-skel-dot"></span><span class="ins-skel-text"></span><span class="ins-skel-badge"></span></div>';
       h += '<div class="ins-platforms">';
@@ -769,6 +1324,72 @@
     if (data.itemCount > 0) parts.push(data.itemCount + ' item' + (data.itemCount > 1 ? 's' : ''));
     if (!parts.length) return '';
     return '<span class="ins-plat-fields">' + esc(parts.join(' \u00B7 ')) + '</span>';
+  }
+
+  /** Render item IDs as monospace chips (max 10 visible). */
+  function renderIdChips(ids) {
+    const MAX_VISIBLE = 10;
+    const arr = [...ids].sort();
+    let h = '<span class="ins-item-chips">';
+    const visible = arr.slice(0, MAX_VISIBLE);
+    for (const id of visible) {
+      h += '<span class="ins-item-chip">' + esc(id) + '</span>';
+    }
+    if (arr.length > MAX_VISIBLE) {
+      h += '<span class="ins-item-more">+' + (arr.length - MAX_VISIBLE) + ' more</span>';
+    }
+    h += '</span>';
+    return h;
+  }
+
+  /** Render the global Item IDs card for insights view. */
+  function renderItemIdsCard(analysis) {
+    const sev = analysis.maxSeverity || "info";
+    const sevLabel = sev === "error" ? "Issues found" : sev === "warning" ? "Warnings" : sev === "ok" ? "OK" : "Info";
+    const sevIcon = sev === "error" ? "\u2716" : sev === "warning" ? "\u26A0" : sev === "ok" ? "\u2714" : "\u2139";
+
+    let h = '<div class="ins-stage">';
+
+    // Header
+    h += '<div class="ins-stage-header">';
+    h += '<span class="dot" style="background: var(--accent)"></span>';
+    h += '<span class="ins-stage-label">Item IDs</span>';
+    h += '<span class="ins-severity-badge ' + sev + '">' + sevIcon + ' ' + sevLabel + '</span>';
+    h += '</div>';
+
+    // Platform rows
+    h += '<div class="ins-plat-rows">';
+    const platList = [
+      { p: PLATFORMS[0], ids: analysis.perPlatform.ga4.allIds },
+      { p: PLATFORMS[1], ids: analysis.perPlatform.gads.allIds },
+      { p: PLATFORMS[2], ids: analysis.perPlatform.fb.allIds },
+    ];
+    for (const { p, ids } of platList) {
+      if (ids.size === 0) {
+        h += '<div class="ins-plat-row">';
+        h += '<span class="ins-plat-badge" style="color: var(' + p.color + ')">' + p.icon + ' ' + esc(p.label) + '</span>';
+        h += '<span class="ins-plat-na">No items</span>';
+        h += '</div>';
+      } else {
+        h += '<div class="ins-plat-row" style="background: var(' + p.dim + ')">';
+        h += '<span class="ins-plat-badge" style="color: var(' + p.color + ')">' + p.icon + ' ' + esc(p.label) + '</span>';
+        h += renderIdChips(ids);
+        h += '<span class="ins-item-count">' + ids.size + ' ID' + (ids.size > 1 ? 's' : '') + '</span>';
+        h += '</div>';
+      }
+    }
+    h += '</div>';
+
+    // Findings
+    h += '<div class="ins-findings">';
+    for (const ins of analysis.insights) {
+      const icon = ins.severity === "error" ? "\u2716" : ins.severity === "warning" ? "\u26A0" : ins.severity === "info" ? "\u2139" : "\u2714";
+      h += '<div class="ins-row ins-row-' + ins.severity + '"><span class="ins-row-icon">' + icon + '</span>' + esc(ins.message) + '</div>';
+    }
+    h += '</div>';
+
+    h += '</div>';
+    return h;
   }
 
   /** Render Enhanced Conversions as a full-width bar for purchase stage. */
@@ -1048,7 +1669,195 @@
 
     let doc = "";
 
-    // --- Section 1: Insights Summary ---
+    // Data for new sections
+    const pixelData = collectPixelData();
+    const ga4Consent = getLatestConsent("ga4");
+    const gadsConsent = getLatestConsent("gads");
+    const consentChanges = detectConsentChanges();
+    const capitalize = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ") : "";
+    const consentLabel = { granted: "Granted", denied: "Denied", not_set: "Not Set", unknown: "Unknown" };
+    const CM_PLATFORM_EVENTS = {
+      ga4: new Set(["page_view","view_item","view_item_list","select_item","add_to_cart","remove_from_cart","view_cart","begin_checkout","add_shipping_info","add_payment_info","purchase"]),
+      gads: new Set(["page_view","view_item","add_to_cart","begin_checkout","purchase","conversion"]),
+      fb: new Set(["PageView","ViewContent","Search","AddToWishlist","AddToCart","InitiateCheckout","AddPaymentInfo","Purchase"]),
+    };
+
+    // --- Section 1: Tracking IDs ---
+    doc += '<h2>Tracking IDs</h2>';
+    const pixelPlatforms = [
+      { key: "ga4", label: "GA4", idLabel: "Measurement ID" },
+      { key: "gads", label: "Google Ads", idLabel: "Conversion ID" },
+      { key: "fb", label: "Meta", idLabel: "Pixel ID" },
+    ];
+    let hasAnyIds = false;
+    for (const pp of pixelPlatforms) {
+      const platIds = Object.keys(pixelData[pp.key].ids);
+      if (platIds.length === 0) continue;
+      hasAnyIds = true;
+      doc += '<div class="pixel-section">';
+      doc += '<div class="pixel-plat-header">';
+      doc += '<strong style="color:' + platColor[pp.key] + '">' + h(pp.label) + '</strong>';
+      doc += '<span class="tag">' + platIds.length + ' ID' + (platIds.length > 1 ? 's' : '') + '</span>';
+      if (platIds.length > 1) {
+        doc += '<span class="pixel-warn">\u26A0 Multiple IDs detected</span>';
+      }
+      doc += '</div>';
+      const showLabels = pp.key === "gads";
+      doc += '<table class="data-table"><thead><tr>';
+      doc += '<th>' + h(pp.idLabel) + '</th><th>Endpoints</th><th>Events</th><th>Event Names</th>';
+      if (showLabels) doc += '<th>Conv. Labels</th>';
+      doc += '</tr></thead><tbody>';
+      for (const id of platIds) {
+        const info = pixelData[pp.key].ids[id];
+        doc += '<tr>';
+        doc += '<td class="mono">' + h(id) + '</td>';
+        doc += '<td>' + [...info.endpoints].map((e) => h(e)).join(', ') + '</td>';
+        doc += '<td>' + info.eventCount + '</td>';
+        doc += '<td class="mono">' + [...info.eventNames].map((n) => h(n)).join(', ') + '</td>';
+        if (showLabels) {
+          doc += '<td class="mono">' + [...info.conversionLabels].map((l) => h(l)).join(', ') + '</td>';
+        }
+        doc += '</tr>';
+      }
+      doc += '</tbody></table>';
+      doc += '</div>';
+    }
+    if (!hasAnyIds) {
+      doc += '<p class="no-data">No tracking IDs detected in captured events.</p>';
+    }
+
+    // --- Section 2: Event Coverage ---
+    doc += '<h2>Event Coverage</h2>';
+    const cmLookup = {};
+    for (const p of PLATFORMS) cmLookup[p.key] = {};
+    for (const evt of events) {
+      const src = evt.source || "ga4";
+      if (!cmLookup[src]) continue;
+      cmLookup[src][evt.eventName] = (cmLookup[src][evt.eventName] || 0) + 1;
+    }
+    doc += '<table class="data-table check-grid"><thead><tr><th>Stage</th>';
+    for (const p of PLATFORMS) {
+      doc += '<th style="color:' + platColor[p.key] + '">' + platName[p.key] + '</th>';
+    }
+    doc += '</tr></thead><tbody>';
+    for (const cat of CHECK_MATRIX) {
+      doc += '<tr><td><strong>' + h(cat.label) + '</strong></td>';
+      for (const p of PLATFORMS) {
+        const canMatch = cat.events.some((ev) => CM_PLATFORM_EVENTS[p.key].has(ev));
+        if (!canMatch) {
+          doc += '<td class="cm-report-na">N/A</td>';
+          continue;
+        }
+        const matched = [];
+        let cmTotal = 0;
+        for (const evtName of cat.events) {
+          const count = cmLookup[p.key][evtName] || 0;
+          if (count > 0) { matched.push(h(evtName) + ' (' + count + ')'); cmTotal += count; }
+        }
+        if (matched.length > 0) {
+          doc += '<td class="cm-report-hit">\u2714 ' + cmTotal + ' \u2014 ' + matched.join(', ') + '</td>';
+        } else {
+          doc += '<td class="cm-report-miss">\u2014</td>';
+        }
+      }
+      doc += '</tr>';
+    }
+    doc += '</tbody></table>';
+
+    // --- Section 3: Consent Mode ---
+    doc += '<h2>Consent Mode</h2>';
+    if (!ga4Consent && !gadsConsent) {
+      doc += '<p class="no-data">No consent signals detected. The site may not have implemented Google Consent Mode v2.</p>';
+    } else {
+      // General Consent Status
+      doc += '<h3>General Consent Status</h3>';
+      doc += '<table class="data-table"><thead><tr><th>Category</th><th>Status</th></tr></thead><tbody>';
+      for (const cat of CONSENT_CATEGORIES) {
+        const ga4St = ga4Consent && ga4Consent.gcd ? (ga4Consent.gcd[cat.key] ? ga4Consent.gcd[cat.key].state : null) : null;
+        const gadsSt = gadsConsent && gadsConsent.gcd ? (gadsConsent.gcd[cat.key] ? gadsConsent.gcd[cat.key].state : null) : null;
+        const states = [ga4St, gadsSt].filter(Boolean);
+        const unique = [...new Set(states)];
+        doc += '<tr><td class="mono">' + h(cat.label) + '</td><td>';
+        if (unique.length === 0) {
+          doc += '<span class="consent-unknown">Unknown</span>';
+        } else if (unique.length === 1) {
+          doc += '<span class="consent-' + unique[0] + '">' + (consentLabel[unique[0]] || capitalize(unique[0])) + '</span>';
+        } else {
+          doc += '<span class="consent-discrepancy">Discrepancy</span> \u2014 ';
+          if (ga4St) doc += '<span style="color:#8B5CF6">GA4:</span> ' + (consentLabel[ga4St] || capitalize(ga4St)) + ' ';
+          if (gadsSt) doc += '<span style="color:#F6CF12">GAds:</span> ' + (consentLabel[gadsSt] || capitalize(gadsSt));
+        }
+        doc += '</td></tr>';
+      }
+      doc += '</tbody></table>';
+
+      // Platform Breakdown
+      doc += '<h3>Platform Breakdown</h3>';
+      doc += '<table class="data-table"><thead><tr><th>Category</th>';
+      doc += '<th style="color:#8B5CF6">GA4</th>';
+      doc += '<th style="color:#F6CF12">Google Ads</th>';
+      doc += '</tr></thead><tbody>';
+      for (const cat of CONSENT_CATEGORIES) {
+        doc += '<tr><td class="mono">' + h(cat.label) + '</td>';
+        for (const plat of CONSENT_PLATFORMS) {
+          const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
+          const info = consent && consent.gcd ? (consent.gcd[cat.key] || null) : null;
+          doc += '<td>';
+          if (info) {
+            doc += '<span class="consent-' + info.state + '">' + (consentLabel[info.state] || capitalize(info.state)) + '</span>';
+            doc += ' <span class="mono" style="color:#888">(' + h(info.code || '?') + ')</span>';
+            if (info.inherited) doc += ' <span style="color:#888">\u2197</span>';
+          } else {
+            doc += '<span style="color:#999">\u2014</span>';
+          }
+          doc += '</td>';
+        }
+        doc += '</tr>';
+      }
+      doc += '</tbody></table>';
+
+      // Consent Changes
+      if (consentChanges.length) {
+        doc += '<h3>Consent Changes During Session</h3>';
+        doc += '<div class="findings">';
+        for (const c of consentChanges) {
+          doc += '<div class="finding" style="color:#F6CF12">\u26A0 <strong>' + h(c.category) + '</strong> changed from <strong>' + h(c.from) + '</strong> \u2192 <strong>' + h(c.to) + '</strong> on ' + h(c.platform) + ' (' + h(c.eventName) + ')</div>';
+        }
+        doc += '</div>';
+      }
+
+      // Raw Consent Strings
+      doc += '<h3>Raw Consent Strings</h3>';
+      for (const plat of CONSENT_PLATFORMS) {
+        const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
+        if (!consent) continue;
+        doc += '<div class="consent-raw">';
+        doc += '<p><strong style="color:' + platColor[plat.key] + '">' + h(plat.label) + '</strong></p>';
+        if (consent.gcd) {
+          doc += '<p class="mono consent-raw-value">gcd: ' + h(consent.gcd.raw) + '</p>';
+          doc += '<p class="consent-decoded">';
+          for (const cat of CONSENT_CATEGORIES) {
+            const info = consent.gcd[cat.key];
+            if (info && info.code) {
+              doc += h(cat.label) + ': ' + h(info.code) + ' = ' + h(info.meaning) + '<br>';
+            }
+          }
+          doc += '</p>';
+        }
+        if (consent.gcs) {
+          doc += '<p class="mono consent-raw-value">gcs: ' + h(consent.gcs.raw) + '</p>';
+          doc += '<p class="consent-decoded">';
+          doc += 'ad_storage: ' + h(consent.gcs.ad_storage) + '<br>';
+          doc += 'analytics_storage: ' + h(consent.gcs.analytics_storage);
+          doc += '</p>';
+        }
+        doc += '</div>';
+      }
+
+      doc += '<p class="consent-note">\u2139 functionality_storage, security_storage, and personalization_storage are not transmitted in gcd/gcs parameters and cannot be detected from network requests.</p>';
+    }
+
+    // --- Section 4: Insights Summary ---
     doc += '<h2>Insights Summary</h2>';
 
     for (const r of results) {
@@ -1131,7 +1940,40 @@
       doc += '</div>'; // stage-card
     }
 
-    // --- Section 2: Event Payloads (best event per stage per platform) ---
+    // Item IDs section in report
+    const reportItemIds = analyzeItemIds();
+    if (reportItemIds.hasAnyItems) {
+      const idSev = reportItemIds.maxSeverity || "info";
+      doc += '<div class="stage-card">';
+      doc += '<div class="stage-header">';
+      doc += '<span class="stage-dot" style="background:#07F2C7"></span>';
+      doc += '<strong>Item IDs</strong>';
+      doc += '<span class="sev-badge" style="background:' + sevColor[idSev] + '20;color:' + sevColor[idSev] + '">' + sevIcon[idSev] + ' ' + sevLabel[idSev] + '</span>';
+      doc += '</div>';
+      doc += '<table class="plat-table"><tbody>';
+      for (const pl of [{ key: "ga4", label: "GA4" }, { key: "gads", label: "Google Ads" }, { key: "fb", label: "Meta" }]) {
+        const ids = reportItemIds.perPlatform[pl.key].allIds;
+        doc += '<tr>';
+        doc += '<td class="plat-name" style="color:' + platColor[pl.key] + '">' + pl.label + '</td>';
+        if (ids.size === 0) {
+          doc += '<td class="plat-na">No items</td>';
+        } else {
+          doc += '<td class="mono">' + [...ids].sort().map((id) => h(id)).join(', ') + ' <span style="color:#888">(' + ids.size + ')</span></td>';
+        }
+        doc += '</tr>';
+      }
+      doc += '</tbody></table>';
+      if (reportItemIds.insights.length) {
+        doc += '<div class="findings">';
+        for (const ins of reportItemIds.insights) {
+          doc += '<div class="finding" style="color:' + sevColor[ins.severity] + '">' + sevIcon[ins.severity] + ' ' + h(ins.message) + '</div>';
+        }
+        doc += '</div>';
+      }
+      doc += '</div>';
+    }
+
+    // --- Section 5: Event Payloads (best event per stage per platform) ---
     doc += '<h2>Event Payloads</h2>';
 
     for (const r of results) {
@@ -1201,7 +2043,7 @@
       }
     }
 
-    // --- Section 3: Raw Event Timeline ---
+    // --- Section 6: Event Timeline ---
     doc += '<h2>Event Timeline</h2>';
     doc += '<table class="data-table timeline"><thead><tr><th>Time</th><th>Source</th><th>Event</th><th>Value</th><th>Items</th></tr></thead><tbody>';
 
@@ -1297,8 +2139,34 @@
       // Timeline
       '.timeline td{padding:2px 8px}' +
 
+      // Pixel Inspector section
+      '.pixel-section{border:1px solid #e0e0e0;border-radius:6px;margin-bottom:12px;padding:10px 12px;break-inside:avoid}' +
+      '.pixel-plat-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px}' +
+      '.pixel-warn{color:#f59e0b;font-size:10px;font-weight:700;margin-left:auto}' +
+
+      // Check Matrix grid
+      '.check-grid td{text-align:center;font-size:10.5px}' +
+      '.check-grid td:first-child{text-align:left}' +
+      '.cm-report-hit{color:#059669;font-weight:600}' +
+      '.cm-report-miss{color:#999;font-size:14px}' +
+      '.cm-report-na{color:#999;font-style:italic}' +
+
+      // Consent Mode
+      '.consent-granted{color:#059669;font-weight:700}' +
+      '.consent-denied{color:#ef4444;font-weight:700}' +
+      '.consent-not_set{color:#999;font-weight:600}' +
+      '.consent-unknown{color:#999;font-style:italic}' +
+      '.consent-discrepancy{color:#f59e0b;font-weight:700}' +
+      '.consent-raw{border:1px solid #e0e0e0;border-radius:4px;padding:8px 12px;margin-bottom:8px;break-inside:avoid}' +
+      '.consent-raw-value{font-size:11px;background:#f5f5f5;padding:4px 8px;border-radius:3px;margin:4px 0}' +
+      '.consent-decoded{font-size:10px;color:#666;padding:2px 8px;line-height:1.6}' +
+      '.consent-note{font-size:10px;color:#888;font-style:italic;margin-top:8px;padding:6px 10px;background:#f8f8f8;border-radius:4px}' +
+
+      // Shared utility
+      '.no-data{color:#999;font-style:italic;font-size:11px;padding:8px 0}' +
+
       // Print
-      '@media print{body{padding:10px 15px}h2{break-before:avoid}.stage-card{break-inside:avoid}.payload-block{break-inside:avoid}}' +
+      '@media print{body{padding:10px 15px}h2{break-before:avoid}.stage-card{break-inside:avoid}.payload-block{break-inside:avoid}.pixel-section{break-inside:avoid}.consent-raw{break-inside:avoid}.check-grid{break-inside:avoid}}' +
       '@page{margin:15mm 12mm;size:A4}';
   }
 

@@ -41,6 +41,7 @@ const ECOMMERCE_EVENTS = new Set([
 ]);
 
 const MAX_EVENTS_PER_TAB = 500;
+const DEDUP_WINDOW_MS = 15000;
 
 /** Google Ads conversion endpoint detection.
  *  Matches /pagead/conversion/, /pagead/1p-conversion/, /pagead/viewthroughconversion/ */
@@ -83,6 +84,104 @@ const ITEM_FIELD_MAP = {
 };
 
 // ---------------------------------------------------------------------------
+// Consent Mode decoding  (gcd / gcs parameters)
+// ---------------------------------------------------------------------------
+
+/**
+ * GCD letter-code lookup.
+ * Each letter encodes the consent state for one category.
+ * Lowercase = set directly; uppercase = inherited from another category.
+ */
+const GCD_CODE_MAP = {
+  l: { state: "not_set",  meaning: "No consent mode signals" },
+  p: { state: "denied",   meaning: "Denied (default, no update)" },
+  q: { state: "denied",   meaning: "Denied (default + update)" },
+  t: { state: "granted",  meaning: "Granted (default, no update)" },
+  r: { state: "granted",  meaning: "Default denied → updated to granted" },
+  m: { state: "denied",   meaning: "Denied (update only)" },
+  n: { state: "granted",  meaning: "Granted (update only)" },
+  u: { state: "denied",   meaning: "Default granted → updated to denied" },
+  v: { state: "granted",  meaning: "Granted (default + update)" },
+};
+
+const GCD_CATEGORIES = ["ad_storage", "analytics_storage", "ad_user_data", "ad_personalization"];
+
+/**
+ * Decode a GCD string like "11t1t1t1t5" into per-category consent states.
+ *
+ * Format: <2-char prefix><sep><letter><sep><letter><sep><letter><sep><letter><suffix>
+ *   Prefix: "11" or "13"  (determines separator digit: 1 or 3)
+ *   Suffix: typically "5" or "7"
+ *   Letters: see GCD_CODE_MAP
+ */
+function decodeGCD(raw) {
+  if (!raw || raw.length < 7) return null;
+
+  try {
+    // Strip 2-char prefix; remainder is like "t1t1t1t5"
+    const body = raw.slice(2);
+    // Extract all letter characters (consent codes) from the body, ignoring digit separators and suffix
+    const letters = [];
+    for (const ch of body) {
+      if (/[a-zA-Z]/.test(ch) && letters.length < 4) letters.push(ch);
+    }
+
+    const result = { raw };
+    for (let i = 0; i < GCD_CATEGORIES.length; i++) {
+      const code = letters[i] || null;
+      if (!code) {
+        result[GCD_CATEGORIES[i]] = { state: "unknown", code: null, meaning: "Not present", inherited: false };
+        continue;
+      }
+      const lower = code.toLowerCase();
+      const entry = GCD_CODE_MAP[lower];
+      const inherited = code !== lower; // uppercase = inherited
+      result[GCD_CATEGORIES[i]] = entry
+        ? { state: entry.state, code, meaning: entry.meaning, inherited }
+        : { state: "unknown", code, meaning: "Unknown code", inherited };
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode a GCS string like "G111" into ad_storage + analytics_storage.
+ *
+ * Format: G1<ad_storage><analytics_storage>
+ *   "1" = granted, "0" = denied, other = unknown
+ */
+function decodeGCS(raw) {
+  if (!raw || raw.length < 4 || !raw.startsWith("G1")) return null;
+
+  const adChar = raw[2];
+  const anChar = raw[3];
+  const map = { "1": "granted", "0": "denied" };
+
+  return {
+    raw,
+    ad_storage: map[adChar] || "unknown",
+    analytics_storage: map[anChar] || "unknown",
+  };
+}
+
+/**
+ * Extract consent signals (gcd + gcs) from request params.
+ * Returns null if neither parameter is present.
+ */
+function extractConsent(params) {
+  const gcdRaw = params.get("gcd");
+  const gcsRaw = params.get("gcs");
+  if (!gcdRaw && !gcsRaw) return null;
+
+  return {
+    gcd: gcdRaw ? decodeGCD(gcdRaw) : null,
+    gcs: gcsRaw ? decodeGCS(gcsRaw) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Storage helpers  (chrome.storage.local — survives SW restarts + nav)
 // ---------------------------------------------------------------------------
 
@@ -117,11 +216,134 @@ function enqueueWrite(tabId, event) {
 async function _appendEvent(tabId, event) {
   const data = await loadTab(tabId);
   if (!data.origin && event.origin) data.origin = event.origin;
+
+  // If this event replaces a sparser duplicate, swap it in-place
+  if (event._replaces) {
+    const fp = event._replaces;
+    const idx = data.events.findIndex(e => identityFingerprint(e) === fp && eventScore(e) < eventScore(event));
+    if (idx >= 0) {
+      data.events[idx] = event;
+      delete event._replaces;
+      await saveTab(tabId, data);
+      return;
+    }
+    delete event._replaces;
+  }
+
   data.events.push(event);
   if (data.events.length > MAX_EVENTS_PER_TAB) {
     data.events = data.events.slice(-MAX_EVENTS_PER_TAB);
   }
   await saveTab(tabId, data);
+}
+
+// ---------------------------------------------------------------------------
+// Event deduplication
+// ---------------------------------------------------------------------------
+
+const _dedupCache = {};
+
+/**
+ * Identity fingerprint — matches the same logical event regardless of data
+ * richness.  Uses only source + tracking ID + event name so that sparse
+ * beacons (e.g. Meta fires a /tr GET with just pixel_id + event_name)
+ * collide with the full-data request for the same event.
+ */
+function identityFingerprint(event) {
+  const p = event.payload;
+  if (event.source === "ga4")  return `ga4|${p.measurement_id}|${p.event_name}`;
+  if (event.source === "gads") return `gads|${p.conversion_id}|${p.conversion_label}|${p.event_name}`;
+  if (event.source === "fb")   return `fb|${p.pixel_id}|${p.event_name}`;
+  return event.url;
+}
+
+/**
+ * Score an event by data completeness — more filled fields = higher score.
+ * Used to decide which version to keep when duplicates collide.
+ */
+function eventScore(event) {
+  let score = 0;
+  const p = event.payload;
+  const ep = p.event_params || {};
+  for (const k in ep) if (ep[k] !== "" && ep[k] != null) score++;
+  if (p.items && p.items.length) {
+    score += p.items.length;
+    for (const item of p.items) {
+      for (const k in item) if (item[k] !== "" && item[k] != null) score++;
+    }
+  }
+  if (p.user_data) {
+    for (const k in p.user_data) if (p.user_data[k]) score++;
+  }
+  return score;
+}
+
+/**
+ * Check whether `event` is a duplicate of a recently seen event for the
+ * same tab.  Two layers:
+ *
+ *   1. Rapid duplicates (≤ 2 s): same identity → keep richest, drop rest.
+ *      Catches protocol retries, duplicate GTM tags, gtag+GTM overlap.
+ *
+ *   2. Sparse-beacon removal (≤ 15 s): if one side has almost no data
+ *      (score ≤ SPARSE_THRESHOLD) while the other is data-rich → drop the
+ *      sparse one.  Catches Meta's lightweight /tr GET beacons.
+ *
+ * When both events carry real data and arrive > 2 s apart they are treated
+ * as separate logical events (e.g. two add_to_cart for different products).
+ *
+ * When a richer event replaces a sparser one, `event._replaces` is set so
+ * that _appendEvent can swap the old event out of storage.
+ */
+const SPARSE_THRESHOLD = 2;
+const RAPID_WINDOW_MS = 2000;
+
+function isDuplicate(tabId, event) {
+  if (!_dedupCache[tabId]) _dedupCache[tabId] = new Map();
+  const cache = _dedupCache[tabId];
+  const now = Date.now();
+
+  // Prune stale entries
+  for (const [fp, entry] of cache) {
+    if (now - entry.ts > DEDUP_WINDOW_MS) cache.delete(fp);
+  }
+
+  const fp = identityFingerprint(event);
+  const score = eventScore(event);
+
+  if (cache.has(fp)) {
+    const cached = cache.get(fp);
+    const gap = now - cached.ts;
+
+    // Layer 1 — rapid duplicate (≤ 2 s): keep richer, drop sparser
+    if (gap <= RAPID_WINDOW_MS) {
+      if (score <= cached.score) return true;
+      cache.set(fp, { ts: now, score });
+      event._replaces = fp;
+      return false;
+    }
+
+    // Layer 2 — sparse-beacon removal (> 2 s, ≤ 15 s)
+    if (score <= SPARSE_THRESHOLD && cached.score > SPARSE_THRESHOLD) {
+      return true;                           // late sparse beacon → drop
+    }
+    if (cached.score <= SPARSE_THRESHOLD && score > SPARSE_THRESHOLD) {
+      cache.set(fp, { ts: now, score });     // cached was sparse → replace
+      event._replaces = fp;
+      return false;
+    }
+
+    // Both have real data and gap > 2 s → different logical events, keep both
+    if (score >= cached.score) cache.set(fp, { ts: now, score });
+    return false;
+  }
+
+  cache.set(fp, { ts: now, score });
+  return false;
+}
+
+function clearDedupCache(tabId) {
+  delete _dedupCache[tabId];
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +504,7 @@ function buildEvent(params, details) {
     method: details.method || "GET",
     origin,
     collectHost,
+    consent: extractConsent(params),
   };
 }
 
@@ -445,6 +668,7 @@ function parseGAdsPageview(details) {
     method: details.method || "GET",
     origin,
     collectHost: url.hostname,
+    consent: extractConsent(p),
   }];
 }
 
@@ -676,6 +900,7 @@ function parseGAdsRequest(details) {
     method: details.method || "GET",
     origin,
     collectHost,
+    consent: extractConsent(p),
   }];
 }
 
@@ -938,6 +1163,7 @@ function parseFBRequest(details) {
     method: details.method || "GET",
     origin,
     collectHost: "www.facebook.com",
+    consent: null,
   }];
 }
 
@@ -976,12 +1202,18 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (!events.length) return;
 
     const tabId = details.tabId;
-    for (const evt of events) enqueueWrite(tabId, evt);
+    const newEvents = events.filter(evt => !isDuplicate(tabId, evt));
+    if (!newEvents.length) return;
+
+    // Capture message types before enqueue (enqueue may delete _replaces)
+    const msgTypes = newEvents.map(evt => evt._replaces ? "REPLACE_EVENT" : "NEW_EVENT");
+
+    for (const evt of newEvents) enqueueWrite(tabId, evt);
 
     _writeQueues[tabId].then(async () => {
       await updateBadge(tabId);
-      for (const evt of events) {
-        chrome.runtime.sendMessage({ type: "NEW_EVENT", event: evt, tabId }).catch(() => {});
+      for (let i = 0; i < newEvents.length; i++) {
+        chrome.runtime.sendMessage({ type: msgTypes[i], event: newEvents[i], tabId }).catch(() => {});
       }
     });
   },
@@ -1053,6 +1285,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTab(tabId);
   delete _writeQueues[tabId];
+  clearDedupCache(tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading") {
+    clearDedupCache(tabId);
+  }
 });
 
 chrome.runtime.onStartup.addListener(restoreBadges);
