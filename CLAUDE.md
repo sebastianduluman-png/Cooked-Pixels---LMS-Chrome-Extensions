@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Ecommerce Inspector — a Chrome Extension (Manifest V3) that observes Google Analytics 4, Google Ads conversion, and Meta Pixel (Facebook) network requests in real-time and displays ecommerce events in a popup UI. No build step — plain JS/CSS/HTML loaded directly by Chrome.
+Cooked Pixels — a Chrome Extension (Manifest V3) that observes Google Analytics 4, Google Ads conversion, and Meta Pixel (Facebook) network requests in real-time and displays ecommerce events in a popup UI. Built for the PPC team at Limitless Agency. No build step — plain JS/CSS/HTML loaded directly by Chrome. Repo: `sebastianduluman-png/Cooked-Pixels---LMS-Chrome-Extensions`.
 
 ## Loading the Extension
 
@@ -25,9 +25,21 @@ Ecommerce Inspector — a Chrome Extension (Manifest V3) that observes Google An
 
 *Check Matrix view:* 6×3 grid (Page View/View/Cart/Checkout/Purchase/Conversion rows × GA4/Google Ads/Meta columns). Each cell shows green checkmark + count if at least one event fired, dim dash if not. N/A shown for platform/event combinations that don't exist (e.g. Conversion for GA4/Meta). Source toggle hides in this view. Real-time updates auto-refresh.
 
-*Insights view:* Cross-platform comparison for 5 stages (Page View, View, Cart, Checkout, Purchase). For each stage, shows the latest event from each platform side by side. Compares ALL shared properties between platforms (value, currency, transaction_id, item IDs, item count, and all shared event_params). Severity levels: error (value mismatch, missing items), warning (property differences), info (missing platform event — non-actionable), ok (match). Page View row shows only event names — no value/items/IDs. Items compared by matching item_id across platforms, then checking all shared properties per item.
+*Insights view:* Cross-platform comparison for 5 stages (Page View, View, Cart, Checkout, Purchase). For each stage, selects the **richest** event per platform (scored by data completeness, not just most recent). Compact horizontal layout: each platform gets one row with event name + inline values. Compares ALL shared properties between platforms (value, currency, transaction_id, item IDs, item count, and all shared event_params). Severity levels: error (value mismatch, missing items), warning (property differences), info (missing platform event — non-actionable), ok (match). Page View row shows only event names — no value/items/IDs. Items compared by matching item_id across platforms, then checking all shared properties per item. Purchase stage includes an **Enhanced Conversions** bar showing email/phone hash presence per platform (GA4: N/A, GAds/Meta: check/dash).
 
 **content.js** — Stub placeholder (unused). All capture via webRequest.
+
+### Enhanced Conversions / Advanced Matching
+
+Google Ads Enhanced Conversions: `em` (email SHA256 hash), `ph` (phone SHA256 hash) extracted from URL params and `data` param. Stored in `payload.user_data`.
+
+Facebook Advanced Matching: `ud[em]` (email hash), `ud[ph]` (phone hash) extracted alongside `cd[...]`, `pmd[...]`, `ap[...]` param groups. Stored in `payload.user_data`.
+
+GA4 does not send user data in the Measurement Protocol (handled server-side) — always shown as N/A.
+
+### PDF Report Export
+
+Export button generates a standalone HTML report opened in a new tab with auto-print. Report contains: insights summary with severity badges, full event payloads per stage per platform (event_params table, items table, user_data), and chronological event timeline. Built entirely in `generateReport()` + `reportCSS()` functions in popup.js. No external dependencies — pure inline HTML/CSS.
 
 ### Why `<all_urls>` in host_permissions
 
@@ -69,7 +81,7 @@ Facebook events (PascalCase): PageView, ViewContent, AddToCart, AddToWishlist, I
 | `GET_EVENTS`   | popup → background | Load events for current tab  |
 | `NEW_EVENT`    | background → popup | Push new event in real-time  |
 | `CLEAR_EVENTS` | popup → background | Clear events for current tab |
-| `EXPORT_EVENTS`| popup → background | Get events for JSON export   |
+| `EXPORT_EVENTS`| popup → background | Get events for report export  |
 
 ## UI Conventions
 
@@ -77,7 +89,9 @@ Facebook events (PascalCase): PageView, ViewContent, AddToCart, AddToWishlist, I
 - Dark palette: #222222 bg, #404040 borders, #07F2C7 teal accent, #301B92/#280F7A purple, #F6CF12 gold, #1877F2 Facebook blue
 - Color coding: lavender = pageview, teal = view, gold = cart, purple = checkout, mint = purchase
 - Source toggle: segmented button bar (All / GA4 / Google Ads / Meta) with SVG icons; hides in Check Matrix view
-- Check Events button: pill button in status bar, toggles between Event List and Check Matrix views
+- Check Events button: pill button in status bar, toggles to Check Matrix view
+- Insights button: pill button in status bar, toggles to Insights view
+- Export Report button: document icon in header, generates print-ready HTML report in new tab
 - Source badges on each card: purple "GA4", gold "GAds", blue "Meta" — each with inline SVG icon
 - GET/POST method badges; endpoint badges (teal "sGTM" for first-party, purple "GA4" for standard Google hosts, gold "Google Ads" for GAds, blue "Meta Pixel" for FB)
 - JSON syntax highlighting: `.json-key` (purple), `.json-string` (mint), `.json-number` (gold), `.json-bool` (teal), `.json-null` (muted)
@@ -85,4 +99,23 @@ Facebook events (PascalCase): PageView, ViewContent, AddToCart, AddToWishlist, I
 
 ## CSP Compliance
 
-No inline scripts, no `eval()`, no `script.textContent` injection. Relies entirely on `chrome.webRequest` (observe-only). Popup loads a single `<script src="popup.js">`.
+No inline scripts, no `eval()`, no `script.textContent` injection. Relies entirely on `chrome.webRequest` (observe-only). Popup loads a single `<script src="popup.js">`. PDF report uses blob URL (`text/html`) opened in a new tab — the inline `<script>` for auto-print is allowed in blob URLs (not subject to extension CSP).
+
+## Event Selection for Insights
+
+`findBestEvent(source, eventNames)` selects the event with the richest data for each platform/stage, not just the most recent. `eventDataScore(e)` scores events by counting non-empty `event_params`, item fields, and `user_data` fields. On equal scores, the most recent event wins.
+
+## Project Files
+
+| File | Purpose |
+|------|---------|
+| `manifest.json` | Extension config (MV3, permissions, icons) |
+| `background.js` | Service worker — request interception & parsing |
+| `popup.js` | UI controller — 3 views + report generator |
+| `popup.html` | Popup markup |
+| `popup.css` | Dark theme styles |
+| `content.js` | Stub (unused) |
+| `CLAUDE.md` | This file — architecture docs |
+| `README.md` | GitHub readme |
+| `TODO.md` | Feature roadmap |
+| `MISTAKES.md` | Bug log + pre-deploy checklist |
