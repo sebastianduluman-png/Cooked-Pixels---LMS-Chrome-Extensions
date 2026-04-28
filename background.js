@@ -776,8 +776,7 @@ function parseGAdsRequest(details) {
     const hasTxn = !!(p.get("transaction_id") || dataMap.get("transaction_id"));
     const hasItems = !!(dataMap.get("id") || p.get("item_id") || p.get("prodid") ||
                         p.get("dynx_itemid") || p.get("ecomm_prodid"));
-    const hasDataParam = !!p.get("data");
-    eventName = (hasRealValue || hasTxn || hasItems || hasDataParam) ? "conversion" : "page_view";
+    eventName = (hasRealValue || hasTxn || hasItems) ? "conversion" : "page_view";
   }
 
   // 4. Map Google Ads internal event names to standard names

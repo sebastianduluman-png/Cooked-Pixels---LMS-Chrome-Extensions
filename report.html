@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <title>Raport Tracking</title>
+  <style>
+    body { margin: 0; padding: 0; background: #1a1a2e; font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .download-bar { position: fixed; top: 0; left: 0; right: 0; background: #1e1040; padding: 10px 24px; display: flex; align-items: center; gap: 12px; z-index: 9999; border-bottom: 2px solid #07F2C7; }
+    .download-bar span { color: #a0a0b4; font-size: 12px; }
+    .btn-download { background: #07F2C7; color: #1a1a2e; border: none; padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .btn-download:hover { background: #05d9b2; }
+    .btn-download:disabled { opacity: 0.6; cursor: wait; }
+    .report-spacer { height: 52px; }
+    #loading { color: #a0a0b4; text-align: center; padding: 60px 20px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="download-bar" id="dlBar">
+    <button class="btn-download" id="dlBtn" disabled>Descarca PDF</button>
+    <span id="dlStatus">Se incarca raportul...</span>
+  </div>
+  <div class="report-spacer"></div>
+  <div id="reportContainer"><div id="loading">Se incarca...</div></div>
+  <script src="html2pdf.bundle.min.js"></script>
+  <script src="report-viewer.js"></script>
+</body>
+</html>

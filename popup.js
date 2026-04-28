@@ -306,11 +306,34 @@
     });
   });
 
-  exportBtn.addEventListener("click", () => {
-    const html = generateReport();
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
+  exportBtn.addEventListener("click", async () => {
+    if (exportBtn.disabled) return;
+    exportBtn.disabled = true;
+    exportBtn.style.opacity = "0.5";
+    try {
+      const reportHTML = generateReport();
+      const siteDomain = (document.getElementById("pageUrl").textContent || "site")
+        .replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/[^a-zA-Z0-9.-]/g, "_");
+      const pdfFilename = "tracking-audit-" + siteDomain + "-" + new Date().toISOString().slice(0, 10) + ".pdf";
+
+      // Store report data for the report viewer page
+      await chrome.storage.local.set({
+        _reportData: {
+          html: reportHTML,
+          css: reportCSS(),
+          domain: siteDomain,
+          filename: pdfFilename,
+        },
+      });
+
+      // Open the report viewer (extension page with html2pdf.js loaded normally)
+      chrome.tabs.create({ url: chrome.runtime.getURL("report.html") });
+    } catch (err) {
+      console.error("PDF export failed:", err);
+    } finally {
+      exportBtn.disabled = false;
+      exportBtn.style.opacity = "";
+    }
   });
 
   // ------------------------------------------------------------------
@@ -1053,15 +1076,15 @@
     const insights = [];
     const isPageview = stage.key === "pageview";
 
-    // Event presence — only check platforms that have mapped event names
+    // Event presence — missing platform events are warnings, not errors
     if (stage.ga4.length && !ga4) {
-      insights.push({ severity: "error", message: "No " + stage.label + " event from GA4" });
+      insights.push({ severity: "warning", message: "No " + stage.label + " event from GA4" });
     }
     if (stage.gads.length && !gads) {
-      insights.push({ severity: "info", message: "No " + stage.label + " event from Google Ads" });
+      insights.push({ severity: "warning", message: "No " + stage.label + " event from Google Ads" });
     }
     if (stage.fb.length && !fb) {
-      insights.push({ severity: "error", message: "No " + stage.label + " event from Meta" });
+      insights.push({ severity: "warning", message: "No " + stage.label + " event from Meta" });
     }
 
     // Build list of active platforms
@@ -1641,49 +1664,317 @@
   }
 
   // ------------------------------------------------------------------
-  // PDF Report Generator
+  // PDF Report Generator (Dark theme, client-friendly)
   // ------------------------------------------------------------------
 
   function generateReport() {
     const pageUrlText = document.getElementById("pageUrl").textContent || "";
     const now = new Date();
-    const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-    const timeStr = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const dateStr = now.toLocaleDateString("ro-RO", { year: "numeric", month: "long", day: "numeric" });
+    const timeStr = now.toLocaleTimeString("ro-RO", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-    // Run insights analysis
     const results = INSIGHTS_STAGES.map((s) => analyzeStage(s));
-
-    // Count sources
-    const sourceSet = new Set(events.map((e) => e.source || "ga4"));
-    const totalEvents = events.length;
-
-    // HTML escape for report (standalone, no DOM dependency)
-    const h = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-    // Platform display helpers
-    const platName = { ga4: "GA4", gads: "Google Ads", fb: "Meta" };
-    const platColor = { ga4: "#8B5CF6", gads: "#F6CF12", fb: "#1877F2" };
-    const sevColor = { error: "#ef4444", warning: "#F6CF12", ok: "#07F2C7", info: "#8B9CF7" };
-    const sevIcon = { error: "\u2716", warning: "\u26A0", ok: "\u2714", info: "\u2139" };
-    const sevLabel = { error: "Issues Found", warning: "Warnings", ok: "OK", info: "Info" };
-
-    let doc = "";
-
-    // Data for new sections
     const pixelData = collectPixelData();
     const ga4Consent = getLatestConsent("ga4");
     const gadsConsent = getLatestConsent("gads");
     const consentChanges = detectConsentChanges();
-    const capitalize = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ") : "";
+    const reportItemIds = analyzeItemIds();
+
+    const sourceSet = new Set(events.map((e) => e.source || "ga4"));
+    const totalEvents = events.length;
+
+    const h = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    const platName = { ga4: "GA4", gads: "Google Ads", fb: "Meta" };
+    const platColor = { ga4: "#8B5CF6", gads: "#F6CF12", fb: "#1877F2" };
+    const platBg = { ga4: "rgba(139,92,246,0.15)", gads: "rgba(246,207,18,0.15)", fb: "rgba(24,119,242,0.15)" };
+    const platIconSvg = {
+      ga4: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-1px"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="1" width="3" height="14" rx="1"/></svg>',
+      gads: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-1px"><path d="M1.5 4.5l5 8h3l-5-8z"/><path d="M9.5 4.5l5 8h-3l-5-8z"/><circle cx="12" cy="12" r="2"/></svg>',
+      fb: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-1px"><path d="M16 8a8 8 0 10-9.25 7.9v-5.59H4.72V8h2.03V6.27c0-2 1.2-3.12 3.02-3.12.88 0 1.8.16 1.8.16v1.97h-1.01c-1 0-1.31.62-1.31 1.26V8h2.22l-.36 2.31H9.25v5.59A8 8 0 0016 8z"/></svg>',
+    };
+    const sevColor = { error: "#ef4444", warning: "#F6CF12", ok: "#07F2C7", info: "#8B9CF7" };
+    const sevIcon = { error: "\u2716", warning: "\u26A0", ok: "\u2714", info: "\u2139" };
+    const sevLabel = { error: "Probleme", warning: "Avertismente", ok: "OK", info: "Info" };
     const consentLabel = { granted: "Granted", denied: "Denied", not_set: "Not Set", unknown: "Unknown" };
+
     const CM_PLATFORM_EVENTS = {
       ga4: new Set(["page_view","view_item","view_item_list","select_item","add_to_cart","remove_from_cart","view_cart","begin_checkout","add_shipping_info","add_payment_info","purchase"]),
       gads: new Set(["page_view","view_item","add_to_cart","begin_checkout","purchase","conversion"]),
       fb: new Set(["PageView","ViewContent","Search","AddToWishlist","AddToCart","InitiateCheckout","AddPaymentInfo","Purchase"]),
     };
 
-    // --- Section 1: Tracking IDs ---
-    doc += '<h2>Tracking IDs</h2>';
+    // Compute summary counts
+    let errCount = 0, warnCount = 0, okCount = 0;
+    for (const r of results) {
+      if (r.maxSeverity === "error") errCount++;
+      else if (r.maxSeverity === "warning") warnCount++;
+      else if (r.maxSeverity === "ok") okCount++;
+    }
+    if (reportItemIds.hasAnyItems) {
+      if (reportItemIds.maxSeverity === "error") errCount++;
+      else if (reportItemIds.maxSeverity === "warning") warnCount++;
+      else if (reportItemIds.maxSeverity === "ok") okCount++;
+    }
+
+    // Build recommendations
+    const recs = buildRecommendations(results, pixelData, ga4Consent, gadsConsent, consentChanges, reportItemIds);
+
+    let doc = '';
+    doc += '<div class="report">';
+
+    // ── Banner ──
+    if (typeof REPORT_BANNER_BASE64 !== "undefined") {
+      doc += '<div class="report-banner"><img src="' + REPORT_BANNER_BASE64 + '" alt="Limitless Agency" /></div>';
+    }
+
+    // ── Header ──
+    doc += '<div class="report-header">';
+    doc += '<h1>Audit Ecommerce Tracking</h1>';
+    doc += '<div class="report-meta">';
+    const pageDomain = pageUrlText.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    doc += '<span>' + h(pageDomain) + '</span>';
+    doc += '<span>' + h(dateStr) + ' &bull; ' + h(timeStr) + '</span>';
+    doc += '<span>' + totalEvents + ' evenimente &bull; ' + sourceSet.size + ' platform' + (sourceSet.size > 1 ? 'e' : 'a') + '</span>';
+    doc += '</div>';
+    doc += '</div>';
+
+    // ── Section 1: Sumar General ──
+    doc += '<div class="section">';
+    doc += '<h2>Sumar General</h2>';
+    doc += '<div class="summary-grid">';
+    // Status pills
+    doc += '<div class="summary-card">';
+    doc += '<div class="summary-label">Rezultate Analiza</div>';
+    doc += '<div class="summary-pills">';
+    if (errCount > 0) doc += '<span class="pill pill-error">' + errCount + ' Erori</span>';
+    if (warnCount > 0) doc += '<span class="pill pill-warn">' + warnCount + ' Avertismente</span>';
+    if (okCount > 0) doc += '<span class="pill pill-ok">' + okCount + ' OK</span>';
+    if (errCount === 0 && warnCount === 0 && okCount === 0) doc += '<span class="pill pill-info">Nicio analiza disponibila</span>';
+    doc += '</div>';
+    doc += '</div>';
+    // Platform presence
+    doc += '<div class="summary-card">';
+    doc += '<div class="summary-label">Platforme Detectate</div>';
+    doc += '<div class="summary-platforms">';
+    for (const p of [{key:"ga4",label:"GA4"},{key:"gads",label:"Google Ads"},{key:"fb",label:"Meta"}]) {
+      const ids = Object.keys(pixelData[p.key].ids);
+      if (ids.length > 0) {
+        doc += '<span class="plat-pill" style="background:' + platBg[p.key] + ';color:' + platColor[p.key] + '">' + platIconSvg[p.key] + ' ' + p.label + ': ' + ids.join(', ') + '</span>';
+      } else {
+        doc += '<span class="plat-pill plat-missing">' + platIconSvg[p.key] + ' ' + p.label + ': nedetectat</span>';
+      }
+    }
+    doc += '</div>';
+    doc += '</div>';
+    // Consent status one-liner
+    doc += '<div class="summary-card">';
+    doc += '<div class="summary-label">Consent Mode v2</div>';
+    if (ga4Consent || gadsConsent) {
+      doc += '<span class="pill pill-ok">Activ</span>';
+    } else {
+      doc += '<span class="pill pill-warn">Nedetectat</span>';
+    }
+    doc += '</div>';
+    doc += '</div>';
+    // Funnel coverage mini-grid
+    doc += '<div class="funnel-grid">';
+    doc += '<table><thead><tr><th></th>';
+    for (const p of PLATFORMS) doc += '<th style="color:' + platColor[p.key] + '">' + platIconSvg[p.key] + ' ' + platName[p.key] + '</th>';
+    doc += '</tr></thead><tbody>';
+    const cmLookup = {};
+    for (const p of PLATFORMS) cmLookup[p.key] = {};
+    for (const evt of events) {
+      const src = evt.source || "ga4";
+      if (cmLookup[src]) cmLookup[src][evt.eventName] = (cmLookup[src][evt.eventName] || 0) + 1;
+    }
+    for (const cat of CHECK_MATRIX) {
+      doc += '<tr><td>' + h(cat.label) + '</td>';
+      for (const p of PLATFORMS) {
+        const canMatch = cat.events.some((ev) => CM_PLATFORM_EVENTS[p.key].has(ev));
+        if (!canMatch) { doc += '<td class="na-cell">N/A</td>'; continue; }
+        let total = 0;
+        for (const evtName of cat.events) total += (cmLookup[p.key][evtName] || 0);
+        if (total > 0) {
+          doc += '<td class="hit-cell">\u2714 ' + total + '</td>';
+        } else {
+          doc += '<td class="miss-cell">\u2014</td>';
+        }
+      }
+      doc += '</tr>';
+    }
+    doc += '</tbody></table>';
+    doc += '</div>';
+    doc += '</div>'; // end section
+
+    // ── Section 2: Ecommerce Events per Platform ──
+    doc += '<div class="section">';
+    doc += '<h2>Ecommerce Events</h2>';
+
+    // Static event reference per platform
+    const EVENT_REF = [
+      { platform: "ga4", label: "GA4 Events", events: [
+        { name: "page_view", config: "Toate paginile", desc: "Vizitatorul ajunge pe o pagina a site-ului", hasItems: false },
+        { name: "view_item", config: "Pagina de produs", desc: "Vizitatorul se afla pe o pagina de produs", hasItems: true },
+        { name: "view_item_list", config: "Pagina de categorie", desc: "Vizitatorul vede o lista de produse", hasItems: true },
+        { name: "add_to_cart", config: "Pagina de produs", desc: "Vizitatorul apasa pe butonul \"adauga in cos\"", hasItems: true },
+        { name: "begin_checkout", config: "Pagina de checkout", desc: "Vizitatorul incepe procesul de finalizare comanda", hasItems: true },
+        { name: "purchase", config: "Pagina de multumire", desc: "Vizitatorul plaseaza o comanda finalizata", hasItems: true },
+        { name: "Enhanced Conversion", config: "Pagina de multumire", desc: "Trimite date personale criptate pentru atribuire", hasItems: false, special: "ec" },
+      ]},
+      { platform: "gads", label: "Google Ads Events", events: [
+        { name: "page_view", config: "Toate paginile", desc: "Vizitatorul ajunge pe o pagina a site-ului", hasItems: false, displayName: "Remarketing", matchNames: ["page_view", "gtag.config"] },
+        { name: "view_item", config: "Pagina de produs", desc: "Vizitatorul se afla pe o pagina de produs", hasItems: true },
+        { name: "add_to_cart", config: "Pagina de produs", desc: "Vizitatorul apasa pe butonul \"adauga in cos\"", hasItems: true },
+        { name: "begin_checkout", config: "Pagina de checkout", desc: "Vizitatorul incepe procesul de finalizare comanda", hasItems: true },
+        { name: "purchase", config: "Pagina de multumire", desc: "Vizitatorul plaseaza o comanda finalizata", hasItems: true },
+        { name: "Enhanced Conversion", config: "Pagina de multumire", desc: "Trimite date personale criptate pentru atribuire", hasItems: false, special: "ec" },
+      ]},
+      { platform: "fb", label: "Meta Pixel Events", events: [
+        { name: "PageView", config: "Toate paginile", desc: "Vizitatorul ajunge pe o pagina a site-ului", hasItems: false },
+        { name: "ViewContent", config: "Pagina de produs", desc: "Vizitatorul se afla pe o pagina de produs", hasItems: true },
+        { name: "AddToCart", config: "Pagina de produs", desc: "Vizitatorul apasa pe butonul \"adauga in cos\"", hasItems: true },
+        { name: "InitiateCheckout", config: "Pagina de checkout", desc: "Vizitatorul incepe procesul de finalizare comanda", hasItems: true },
+        { name: "Purchase", config: "Pagina de multumire", desc: "Vizitatorul plaseaza o comanda finalizata", hasItems: true },
+        { name: "Advanced Matching", config: "Pagina de multumire", desc: "Trimite date personale criptate pentru atribuire", hasItems: false, special: "am" },
+      ]},
+    ];
+
+    // Build lookup of captured events per platform
+    const capturedByPlat = { ga4: {}, gads: {}, fb: {} };
+    for (const evt of events) {
+      const src = evt.source || "ga4";
+      if (!capturedByPlat[src]) continue;
+      if (!capturedByPlat[src][evt.eventName]) capturedByPlat[src][evt.eventName] = [];
+      capturedByPlat[src][evt.eventName].push(evt);
+    }
+
+    function getBestCaptured(plat, eventName, matchNames) {
+      const names = matchNames || [eventName];
+      let best = null, bestScore = -1;
+      for (const n of names) {
+        const arr = capturedByPlat[plat][n];
+        if (!arr) continue;
+        for (const e of arr) {
+          const s = eventDataScore(e);
+          if (s > bestScore) { bestScore = s; best = e; }
+        }
+      }
+      return best;
+    }
+
+    function payloadFields(evt) {
+      if (!evt) return "";
+      const ep = evt.payload.event_params || {};
+      const items = evt.payload.items || [];
+      const fields = [];
+      if (ep.value != null) {
+        let v = String(ep.value);
+        if (ep.currency) v += " " + ep.currency;
+        fields.push({ label: "Value", value: v, cls: "pf-value-hl" });
+      }
+      if (ep.transaction_id) {
+        fields.push({ label: "Transaction ID", value: ep.transaction_id, cls: "pf-txn-hl" });
+      }
+      if (items.length > 0) {
+        fields.push({ label: "Items", value: items.length + " produs" + (items.length > 1 ? "e" : ""), cls: "" });
+        const ids = items.map(function(it) { return it.item_id || it.id || ""; }).filter(Boolean);
+        if (ids.length) {
+          const display = ids.length > 3 ? ids.slice(0, 3).join(", ") + " +" + (ids.length - 3) : ids.join(", ");
+          fields.push({ label: "Item ID", value: display, cls: "pf-id-hl" });
+        }
+        const prices = items.map(function(it) { return it.price; }).filter(function(p) { return p != null; });
+        if (prices.length) {
+          const display = prices.length > 3 ? prices.slice(0, 3).join(", ") + " +" + (prices.length - 3) : prices.join(", ");
+          fields.push({ label: "Price", value: String(display), cls: "" });
+        }
+        const names = items.map(function(it) { return it.item_name || it.name || ""; }).filter(Boolean);
+        if (names.length) {
+          const display = names.length > 2 ? names.slice(0, 2).join(", ") + " +" + (names.length - 2) : names.join(", ");
+          fields.push({ label: "Item Name", value: display, cls: "" });
+        }
+      }
+      if (!fields.length) return "";
+      let out = '<div class="payload-data"><div class="payload-fields">';
+      for (const f of fields) {
+        out += '<div class="pf ' + f.cls + '"><span class="pf-label">' + h(f.label) + '</span><span class="pf-val mono">' + h(f.value) + '</span></div>';
+      }
+      out += '</div></div>';
+      return out;
+    }
+
+    function hasUserData(plat) {
+      const purchaseNames = plat === "fb" ? ["Purchase"] : ["purchase"];
+      for (const evt of events) {
+        if (evt.source !== plat) continue;
+        if (purchaseNames.indexOf(evt.eventName) === -1) continue;
+        if (evt.payload.user_data && (evt.payload.user_data.em || evt.payload.user_data.ph)) return true;
+      }
+      return false;
+    }
+
+    let rowNum = 0;
+    for (const platRef of EVENT_REF) {
+      const pk = platRef.platform;
+      let purchaseDetected = false;
+
+      // Platform subtitle with icon
+      doc += '<div class="plat-subtitle">';
+      doc += '<span class="src-badge src-badge-lg" style="background:' + platBg[pk] + ';color:' + platColor[pk] + '">' + platIconSvg[pk] + ' ' + platName[pk] + '</span>';
+      doc += '<span class="plat-subtitle-text">' + h(platRef.label) + '</span>';
+      doc += '</div>';
+
+      doc += '<table class="events-table"><thead><tr>';
+      doc += '<th style="width:32px">#</th>';
+      doc += '<th>Eveniment</th>';
+      doc += '<th>Configurare</th>';
+      doc += '<th>Descriere</th>';
+      doc += '<th style="width:32px">Status</th>';
+      doc += '</tr></thead><tbody>';
+
+      for (const ref of platRef.events) {
+        rowNum++;
+        const matchNames = ref.matchNames || [ref.name];
+        let detected = false;
+        let capturedEvt = null;
+
+        if (ref.special === "ec" || ref.special === "am") {
+          detected = purchaseDetected && hasUserData(pk);
+        } else {
+          capturedEvt = getBestCaptured(pk, ref.name, matchNames);
+          detected = !!capturedEvt;
+          if ((ref.name === "purchase" || ref.name === "Purchase") && detected) purchaseDetected = true;
+        }
+
+        const statusIcon = detected ? '<span class="status-ok">\u2714</span>' : '<span class="status-miss">\u2718</span>';
+        const displayName = ref.displayName || ref.name;
+
+        doc += '<tr' + (detected ? '' : ' class="row-dim"') + '>';
+        doc += '<td class="row-num">' + rowNum + '</td>';
+        doc += '<td class="evt-name mono">' + h(displayName) + '</td>';
+        doc += '<td class="config-cell">' + h(ref.config) + '</td>';
+        doc += '<td class="desc-cell">' + h(ref.desc) + '</td>';
+        doc += '<td class="status-cell">' + statusIcon + '</td>';
+        doc += '</tr>';
+
+        // Payload fields for item-bearing events when detected
+        if (ref.hasItems && capturedEvt) {
+          const pf = payloadFields(capturedEvt);
+          if (pf) {
+            doc += '<tr class="payload-row">';
+            doc += '<td></td>';
+            doc += '<td colspan="4">' + pf + '</td>';
+            doc += '</tr>';
+          }
+        }
+      }
+      doc += '</tbody></table>';
+    }
+    doc += '</div>';
+
+    // ── Section 3: Pixeli Instalati ──
+    doc += '<div class="section">';
+    doc += '<h2>Pixeli Instalati</h2>';
     const pixelPlatforms = [
       { key: "ga4", label: "GA4", idLabel: "Measurement ID" },
       { key: "gads", label: "Google Ads", idLabel: "Conversion ID" },
@@ -1694,182 +1985,112 @@
       const platIds = Object.keys(pixelData[pp.key].ids);
       if (platIds.length === 0) continue;
       hasAnyIds = true;
-      doc += '<div class="pixel-section">';
-      doc += '<div class="pixel-plat-header">';
-      doc += '<strong style="color:' + platColor[pp.key] + '">' + h(pp.label) + '</strong>';
-      doc += '<span class="tag">' + platIds.length + ' ID' + (platIds.length > 1 ? 's' : '') + '</span>';
+      doc += '<div class="pixel-card">';
+      doc += '<div class="pixel-header">';
+      doc += '<span class="src-badge" style="background:' + platBg[pp.key] + ';color:' + platColor[pp.key] + '">' + platIconSvg[pp.key] + ' ' + h(pp.label) + '</span>';
       if (platIds.length > 1) {
-        doc += '<span class="pixel-warn">\u26A0 Multiple IDs detected</span>';
+        doc += '<span class="pixel-warn">\u26A0 ' + platIds.length + ' ID-uri detectate</span>';
       }
       doc += '</div>';
-      const showLabels = pp.key === "gads";
-      doc += '<table class="data-table"><thead><tr>';
-      doc += '<th>' + h(pp.idLabel) + '</th><th>Endpoints</th><th>Events</th><th>Event Names</th>';
-      if (showLabels) doc += '<th>Conv. Labels</th>';
-      doc += '</tr></thead><tbody>';
       for (const id of platIds) {
         const info = pixelData[pp.key].ids[id];
-        doc += '<tr>';
-        doc += '<td class="mono">' + h(id) + '</td>';
-        doc += '<td>' + [...info.endpoints].map((e) => h(e)).join(', ') + '</td>';
-        doc += '<td>' + info.eventCount + '</td>';
-        doc += '<td class="mono">' + [...info.eventNames].map((n) => h(n)).join(', ') + '</td>';
-        if (showLabels) {
-          doc += '<td class="mono">' + [...info.conversionLabels].map((l) => h(l)).join(', ') + '</td>';
-        }
-        doc += '</tr>';
+        doc += '<div class="pixel-id-row">';
+        doc += '<span class="pixel-id mono">' + h(id) + '</span>';
+        doc += '<span class="pixel-count">' + info.eventCount + ' evenimente</span>';
+        doc += '</div>';
       }
-      doc += '</tbody></table>';
       doc += '</div>';
     }
     if (!hasAnyIds) {
-      doc += '<p class="no-data">No tracking IDs detected in captured events.</p>';
+      doc += '<p class="no-data">Niciun pixel detectat in evenimentele capturate.</p>';
     }
+    doc += '</div>';
 
-    // --- Section 2: Event Coverage ---
-    doc += '<h2>Event Coverage</h2>';
-    const cmLookup = {};
-    for (const p of PLATFORMS) cmLookup[p.key] = {};
-    for (const evt of events) {
-      const src = evt.source || "ga4";
-      if (!cmLookup[src]) continue;
-      cmLookup[src][evt.eventName] = (cmLookup[src][evt.eventName] || 0) + 1;
-    }
-    doc += '<table class="data-table check-grid"><thead><tr><th>Stage</th>';
-    for (const p of PLATFORMS) {
-      doc += '<th style="color:' + platColor[p.key] + '">' + platName[p.key] + '</th>';
-    }
-    doc += '</tr></thead><tbody>';
-    for (const cat of CHECK_MATRIX) {
-      doc += '<tr><td><strong>' + h(cat.label) + '</strong></td>';
-      for (const p of PLATFORMS) {
-        const canMatch = cat.events.some((ev) => CM_PLATFORM_EVENTS[p.key].has(ev));
-        if (!canMatch) {
-          doc += '<td class="cm-report-na">N/A</td>';
-          continue;
-        }
-        const matched = [];
-        let cmTotal = 0;
-        for (const evtName of cat.events) {
-          const count = cmLookup[p.key][evtName] || 0;
-          if (count > 0) { matched.push(h(evtName) + ' (' + count + ')'); cmTotal += count; }
-        }
-        if (matched.length > 0) {
-          doc += '<td class="cm-report-hit">\u2714 ' + cmTotal + ' \u2014 ' + matched.join(', ') + '</td>';
-        } else {
-          doc += '<td class="cm-report-miss">\u2014</td>';
-        }
-      }
-      doc += '</tr>';
-    }
-    doc += '</tbody></table>';
-
-    // --- Section 3: Consent Mode ---
-    doc += '<h2>Consent Mode</h2>';
+    // ── Section 4: Consent Status ──
+    doc += '<div class="section">';
+    doc += '<h2>Consent Status</h2>';
     if (!ga4Consent && !gadsConsent) {
-      doc += '<p class="no-data">No consent signals detected. The site may not have implemented Google Consent Mode v2.</p>';
+      doc += '<p class="no-data">Consent Mode v2 nu a fost detectat. Site-ul nu are implementat Google Consent Mode.</p>';
     } else {
-      // General Consent Status
-      doc += '<h3>General Consent Status</h3>';
-      doc += '<table class="data-table"><thead><tr><th>Category</th><th>Status</th></tr></thead><tbody>';
+      // General status table
+      doc += '<table class="consent-table"><thead><tr><th>Categorie</th><th>Status</th></tr></thead><tbody>';
       for (const cat of CONSENT_CATEGORIES) {
-        const ga4St = ga4Consent && ga4Consent.gcd ? (ga4Consent.gcd[cat.key] ? ga4Consent.gcd[cat.key].state : null) : null;
-        const gadsSt = gadsConsent && gadsConsent.gcd ? (gadsConsent.gcd[cat.key] ? gadsConsent.gcd[cat.key].state : null) : null;
+        const ga4St = ga4Consent && ga4Consent.gcd && ga4Consent.gcd[cat.key] ? ga4Consent.gcd[cat.key].state : null;
+        const gadsSt = gadsConsent && gadsConsent.gcd && gadsConsent.gcd[cat.key] ? gadsConsent.gcd[cat.key].state : null;
         const states = [ga4St, gadsSt].filter(Boolean);
         const unique = [...new Set(states)];
         doc += '<tr><td class="mono">' + h(cat.label) + '</td><td>';
         if (unique.length === 0) {
-          doc += '<span class="consent-unknown">Unknown</span>';
+          doc += '<span class="consent-pill consent-unknown">Unknown</span>';
         } else if (unique.length === 1) {
-          doc += '<span class="consent-' + unique[0] + '">' + (consentLabel[unique[0]] || capitalize(unique[0])) + '</span>';
+          doc += '<span class="consent-pill consent-' + unique[0] + '">' + (consentLabel[unique[0]] || unique[0]) + '</span>';
         } else {
-          doc += '<span class="consent-discrepancy">Discrepancy</span> \u2014 ';
-          if (ga4St) doc += '<span style="color:#8B5CF6">GA4:</span> ' + (consentLabel[ga4St] || capitalize(ga4St)) + ' ';
-          if (gadsSt) doc += '<span style="color:#F6CF12">GAds:</span> ' + (consentLabel[gadsSt] || capitalize(gadsSt));
+          doc += '<span class="consent-pill consent-discrepancy">Discrepancy</span>';
+          doc += '<span class="consent-detail">';
+          if (ga4St) doc += ' ' + platIconSvg.ga4 + ' GA4: ' + (consentLabel[ga4St] || ga4St);
+          if (gadsSt) doc += ' | ' + platIconSvg.gads + ' GAds: ' + (consentLabel[gadsSt] || gadsSt);
+          doc += '</span>';
         }
         doc += '</td></tr>';
       }
       doc += '</tbody></table>';
 
-      // Platform Breakdown
-      doc += '<h3>Platform Breakdown</h3>';
-      doc += '<table class="data-table"><thead><tr><th>Category</th>';
-      doc += '<th style="color:#8B5CF6">GA4</th>';
-      doc += '<th style="color:#F6CF12">Google Ads</th>';
-      doc += '</tr></thead><tbody>';
-      for (const cat of CONSENT_CATEGORIES) {
-        doc += '<tr><td class="mono">' + h(cat.label) + '</td>';
-        for (const plat of CONSENT_PLATFORMS) {
-          const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
-          const info = consent && consent.gcd ? (consent.gcd[cat.key] || null) : null;
-          doc += '<td>';
-          if (info) {
-            doc += '<span class="consent-' + info.state + '">' + (consentLabel[info.state] || capitalize(info.state)) + '</span>';
-            doc += ' <span class="mono" style="color:#888">(' + h(info.code || '?') + ')</span>';
-            if (info.inherited) doc += ' <span style="color:#888">\u2197</span>';
-          } else {
-            doc += '<span style="color:#999">\u2014</span>';
-          }
-          doc += '</td>';
-        }
-        doc += '</tr>';
-      }
-      doc += '</tbody></table>';
-
-      // Consent Changes
-      if (consentChanges.length) {
-        doc += '<h3>Consent Changes During Session</h3>';
-        doc += '<div class="findings">';
-        for (const c of consentChanges) {
-          doc += '<div class="finding" style="color:#F6CF12">\u26A0 <strong>' + h(c.category) + '</strong> changed from <strong>' + h(c.from) + '</strong> \u2192 <strong>' + h(c.to) + '</strong> on ' + h(c.platform) + ' (' + h(c.eventName) + ')</div>';
-        }
-        doc += '</div>';
-      }
-
-      // Raw Consent Strings
-      doc += '<h3>Raw Consent Strings</h3>';
+      // Raw consent values (simplified)
+      doc += '<div class="consent-raw-section">';
       for (const plat of CONSENT_PLATFORMS) {
         const consent = plat.key === "ga4" ? ga4Consent : gadsConsent;
         if (!consent) continue;
-        doc += '<div class="consent-raw">';
-        doc += '<p><strong style="color:' + platColor[plat.key] + '">' + h(plat.label) + '</strong></p>';
+        doc += '<div class="consent-raw-card">';
+        doc += '<div class="consent-raw-plat" style="color:' + platColor[plat.key] + '">' + platIconSvg[plat.key] + ' ' + h(plat.label) + '</div>';
         if (consent.gcd) {
-          doc += '<p class="mono consent-raw-value">gcd: ' + h(consent.gcd.raw) + '</p>';
-          doc += '<p class="consent-decoded">';
+          doc += '<div class="consent-raw-row"><span class="consent-raw-label">GCD</span><span class="consent-raw-value mono">' + h(consent.gcd.raw) + '</span></div>';
+          doc += '<div class="consent-raw-decoded">';
           for (const cat of CONSENT_CATEGORIES) {
             const info = consent.gcd[cat.key];
             if (info && info.code) {
-              doc += h(cat.label) + ': ' + h(info.code) + ' = ' + h(info.meaning) + '<br>';
+              const stClass = info.state === "granted" ? "consent-granted" : info.state === "denied" ? "consent-denied" : "consent-not_set";
+              doc += '<span class="consent-decoded-item"><span class="mono">' + h(cat.label) + '</span>: <code>' + h(info.code) + '</code> = <span class="' + stClass + '">' + h(info.state) + '</span></span>';
             }
           }
-          doc += '</p>';
+          doc += '</div>';
         }
         if (consent.gcs) {
-          doc += '<p class="mono consent-raw-value">gcs: ' + h(consent.gcs.raw) + '</p>';
-          doc += '<p class="consent-decoded">';
-          doc += 'ad_storage: ' + h(consent.gcs.ad_storage) + '<br>';
-          doc += 'analytics_storage: ' + h(consent.gcs.analytics_storage);
-          doc += '</p>';
+          doc += '<div class="consent-raw-row"><span class="consent-raw-label">GCS</span><span class="consent-raw-value mono">' + h(consent.gcs.raw) + '</span></div>';
+          doc += '<div class="consent-raw-decoded">';
+          doc += '<span class="consent-decoded-item"><span class="mono">ad_storage</span>: ' + h(consent.gcs.ad_storage) + '</span>';
+          doc += '<span class="consent-decoded-item"><span class="mono">analytics_storage</span>: ' + h(consent.gcs.analytics_storage) + '</span>';
+          doc += '</div>';
         }
         doc += '</div>';
       }
+      doc += '<div class="consent-legend">GCD = starea consent default per categorie (litera: t=granted, p=denied, l=not set, r/n=update). GCS = starea curenta (1=granted, 0=denied).</div>';
+      doc += '</div>';
 
-      doc += '<p class="consent-note">\u2139 functionality_storage, security_storage, and personalization_storage are not transmitted in gcd/gcs parameters and cannot be detected from network requests.</p>';
+      if (consentChanges.length) {
+        doc += '<div class="consent-changes">';
+        doc += '<div class="changes-title">\u26A0 Modificari Consent in Sesiune</div>';
+        for (const c of consentChanges) {
+          doc += '<div class="change-row">' + h(c.category) + ': ' + h(c.from) + ' \u2192 ' + h(c.to) + ' (' + h(c.platform) + ')</div>';
+        }
+        doc += '</div>';
+      }
     }
+    doc += '</div>';
 
-    // --- Section 4: Insights Summary ---
-    doc += '<h2>Insights Summary</h2>';
+    // ── Section 5: Comparatie Cross-Platform ──
+    doc += '<div class="section">';
+    doc += '<h2>Comparatie Cross-Platform</h2>';
 
     for (const r of results) {
       const sev = r.maxSeverity;
+      const stageColor = r.stage.key === "pageview" ? "#8B9CF7" : r.stage.key === "view" ? "#07F2C7" : r.stage.key === "cart" ? "#F6CF12" : r.stage.key === "checkout" ? "#8B5CF6" : "#07F2C7";
       doc += '<div class="stage-card">';
       doc += '<div class="stage-header">';
-      doc += '<span class="stage-dot" style="background:' + (r.stage.key === "pageview" ? "#8B9CF7" : r.stage.key === "view" ? "#07F2C7" : r.stage.key === "cart" ? "#F6CF12" : r.stage.key === "checkout" ? "#8B5CF6" : "#07F2C7") + '"></span>';
+      doc += '<span class="stage-dot" style="background:' + stageColor + '"></span>';
       doc += '<strong>' + h(r.stage.label) + '</strong>';
-      doc += '<span class="sev-badge" style="background:' + sevColor[sev] + '20;color:' + sevColor[sev] + '">' + sevIcon[sev] + ' ' + sevLabel[sev] + '</span>';
+      doc += '<span class="sev-badge" style="background:' + sevColor[sev] + '22;color:' + sevColor[sev] + '">' + sevIcon[sev] + ' ' + sevLabel[sev] + '</span>';
       doc += '</div>';
 
-      // Platform rows
       const platforms = [
         { key: "ga4", evt: r.ga4Evt, data: r.ga4, stageEvents: r.stage.ga4 },
         { key: "gads", evt: r.gadsEvt, data: r.gads, stageEvents: r.stage.gads },
@@ -1879,23 +2100,27 @@
       doc += '<table class="plat-table"><tbody>';
       for (const pl of platforms) {
         doc += '<tr>';
-        doc += '<td class="plat-name" style="color:' + platColor[pl.key] + '">' + platName[pl.key] + '</td>';
+        doc += '<td class="plat-name" style="color:' + platColor[pl.key] + '">' + platIconSvg[pl.key] + ' ' + platName[pl.key] + '</td>';
         if (!pl.stageEvents || pl.stageEvents.length === 0) {
           doc += '<td class="plat-na" colspan="2">N/A</td>';
         } else if (!pl.data) {
-          doc += '<td class="plat-na" colspan="2">No event</td>';
+          doc += '<td class="plat-na" colspan="2">Niciun eveniment</td>';
         } else {
           doc += '<td class="plat-evt">' + h(pl.data.eventName) + '</td>';
           if (r.stage.key !== "pageview") {
-            const parts = [];
+            const fields = [];
             if (pl.data.value != null) {
               let v = String(pl.data.value);
               if (pl.data.currency) v += " " + pl.data.currency;
-              parts.push(v);
+              fields.push('<div class="pf pf-value-hl"><span class="pf-label">Value</span><span class="pf-val mono">' + h(v) + '</span></div>');
             }
-            if (pl.data.txnId) parts.push("Txn: " + pl.data.txnId);
-            if (pl.data.itemCount > 0) parts.push(pl.data.itemCount + " item" + (pl.data.itemCount > 1 ? "s" : ""));
-            doc += '<td class="plat-vals">' + h(parts.join(" \u00B7 ")) + '</td>';
+            if (pl.data.txnId) fields.push('<div class="pf pf-txn-hl"><span class="pf-label">Transaction ID</span><span class="pf-val mono">' + h(pl.data.txnId) + '</span></div>');
+            if (pl.data.itemCount > 0) fields.push('<div class="pf"><span class="pf-label">Items</span><span class="pf-val">' + pl.data.itemCount + ' produs' + (pl.data.itemCount > 1 ? 'e' : '') + '</span></div>');
+            if (pl.data.itemIds && pl.data.itemIds.length > 0) {
+              const display = pl.data.itemIds.length > 3 ? pl.data.itemIds.slice(0, 3).join(", ") + " +" + (pl.data.itemIds.length - 3) : pl.data.itemIds.join(", ");
+              fields.push('<div class="pf pf-id-hl"><span class="pf-label">Item ID</span><span class="pf-val mono">' + h(display) + '</span></div>');
+            }
+            doc += '<td>' + (fields.length ? '<div class="payload-fields">' + fields.join("") + '</div>' : '') + '</td>';
           } else {
             doc += '<td></td>';
           }
@@ -1908,27 +2133,24 @@
       if (r.stage.key === "purchase") {
         doc += '<div class="ec-bar">';
         doc += '<span class="ec-title">Enhanced Conversions</span>';
-        doc += '<span class="ec-plat"><b style="color:' + platColor.ga4 + '">GA4</b> <i class="na">N/A</i></span>';
-        // GAds
+        doc += '<span class="ec-plat"><b style="color:' + platColor.ga4 + '">GA4</b> <i class="ec-na">N/A</i></span>';
         const gadsUd = r.gads && r.gads.userData;
         const gadsHasEm = gadsUd && gadsUd.em && gadsUd.em.length > 0;
         const gadsHasPh = gadsUd && gadsUd.ph && gadsUd.ph.length > 0;
         doc += '<span class="ec-plat"><b style="color:' + platColor.gads + '">GAds</b> ';
-        if (!r.gads || (!gadsHasEm && !gadsHasPh)) { doc += '<i class="na">N/A</i>'; }
+        if (!r.gads || (!gadsHasEm && !gadsHasPh)) { doc += '<i class="ec-na">N/A</i>'; }
         else { doc += 'Email ' + (gadsHasEm ? '<span class="ec-ok">\u2714</span>' : '\u2014') + ' Phone ' + (gadsHasPh ? '<span class="ec-ok">\u2714</span>' : '\u2014'); }
         doc += '</span>';
-        // Meta
         const fbUd = r.fb && r.fb.userData;
         const fbHasEm = fbUd && fbUd.em && fbUd.em.length > 0;
         const fbHasPh = fbUd && fbUd.ph && fbUd.ph.length > 0;
         doc += '<span class="ec-plat"><b style="color:' + platColor.fb + '">Meta</b> ';
-        if (!r.fb || (!fbHasEm && !fbHasPh)) { doc += '<i class="na">N/A</i>'; }
+        if (!r.fb || (!fbHasEm && !fbHasPh)) { doc += '<i class="ec-na">N/A</i>'; }
         else { doc += 'Email ' + (fbHasEm ? '<span class="ec-ok">\u2714</span>' : '\u2014') + ' Phone ' + (fbHasPh ? '<span class="ec-ok">\u2714</span>' : '\u2014'); }
         doc += '</span>';
         doc += '</div>';
       }
 
-      // Findings
       if (r.insights.length) {
         doc += '<div class="findings">';
         for (const ins of r.insights) {
@@ -1937,28 +2159,29 @@
         doc += '</div>';
       }
 
-      doc += '</div>'; // stage-card
+      doc += '</div>';
     }
 
-    // Item IDs section in report
-    const reportItemIds = analyzeItemIds();
+    // Item IDs
     if (reportItemIds.hasAnyItems) {
       const idSev = reportItemIds.maxSeverity || "info";
       doc += '<div class="stage-card">';
       doc += '<div class="stage-header">';
       doc += '<span class="stage-dot" style="background:#07F2C7"></span>';
       doc += '<strong>Item IDs</strong>';
-      doc += '<span class="sev-badge" style="background:' + sevColor[idSev] + '20;color:' + sevColor[idSev] + '">' + sevIcon[idSev] + ' ' + sevLabel[idSev] + '</span>';
+      doc += '<span class="sev-badge" style="background:' + sevColor[idSev] + '22;color:' + sevColor[idSev] + '">' + sevIcon[idSev] + ' ' + sevLabel[idSev] + '</span>';
       doc += '</div>';
       doc += '<table class="plat-table"><tbody>';
-      for (const pl of [{ key: "ga4", label: "GA4" }, { key: "gads", label: "Google Ads" }, { key: "fb", label: "Meta" }]) {
+      for (const pl of [{key:"ga4",label:"GA4"},{key:"gads",label:"Google Ads"},{key:"fb",label:"Meta"}]) {
         const ids = reportItemIds.perPlatform[pl.key].allIds;
         doc += '<tr>';
         doc += '<td class="plat-name" style="color:' + platColor[pl.key] + '">' + pl.label + '</td>';
         if (ids.size === 0) {
-          doc += '<td class="plat-na">No items</td>';
+          doc += '<td class="plat-na">Fara produse</td>';
         } else {
-          doc += '<td class="mono">' + [...ids].sort().map((id) => h(id)).join(', ') + ' <span style="color:#888">(' + ids.size + ')</span></td>';
+          const idArr = [...ids].sort();
+          const display = idArr.length > 8 ? idArr.slice(0, 8).map((id) => h(id)).join(', ') + ' +' + (idArr.length - 8) + ' altele' : idArr.map((id) => h(id)).join(', ');
+          doc += '<td class="mono">' + display + ' <span class="id-count">(' + ids.size + ')</span></td>';
         }
         doc += '</tr>';
       }
@@ -1972,202 +2195,248 @@
       }
       doc += '</div>';
     }
+    doc += '</div>';
 
-    // --- Section 5: Event Payloads (best event per stage per platform) ---
-    doc += '<h2>Event Payloads</h2>';
-
-    for (const r of results) {
-      const platforms = [
-        { key: "ga4", evt: r.ga4Evt, data: r.ga4 },
-        { key: "gads", evt: r.gadsEvt, data: r.gads },
-        { key: "fb", evt: r.fbEvt, data: r.fb },
-      ];
-
-      const hasAny = platforms.some((p) => p.evt);
-      if (!hasAny) continue;
-
-      doc += '<h3>' + h(r.stage.label) + '</h3>';
-
-      for (const pl of platforms) {
-        if (!pl.evt) continue;
-        const ep = pl.evt.payload.event_params || {};
-        const items = pl.evt.payload.items || [];
-        const ud = pl.evt.payload.user_data;
-
-        doc += '<div class="payload-block">';
-        doc += '<div class="payload-header" style="border-left:3px solid ' + platColor[pl.key] + '">';
-        doc += '<b style="color:' + platColor[pl.key] + '">' + platName[pl.key] + '</b> \u2014 <code>' + h(pl.evt.eventName) + '</code>';
-        if (pl.evt.payload.measurement_id) doc += ' &nbsp;<span class="tag">' + h(pl.evt.payload.measurement_id) + '</span>';
-        if (pl.evt.payload.conversion_id) doc += ' &nbsp;<span class="tag">' + h(pl.evt.payload.conversion_id) + '</span>';
-        if (pl.evt.payload.pixel_id) doc += ' &nbsp;<span class="tag">Pixel: ' + h(pl.evt.payload.pixel_id) + '</span>';
+    // ── Section 6: Recomandari ──
+    doc += '<div class="section">';
+    doc += '<h2>Recomandari</h2>';
+    if (recs.length === 0) {
+      doc += '<p class="no-data">Nicio recomandare - totul pare corect configurat.</p>';
+    } else {
+      for (const rec of recs) {
+        doc += '<div class="rec-card rec-' + rec.severity + '">';
+        doc += '<span class="rec-icon">' + sevIcon[rec.severity] + '</span>';
+        doc += '<span>' + h(rec.text) + '</span>';
         doc += '</div>';
-
-        // Event params table
-        const epKeys = Object.keys(ep).filter((k) => ep[k] != null && ep[k] !== "");
-        if (epKeys.length) {
-          doc += '<table class="data-table"><thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>';
-          for (const k of epKeys) {
-            doc += '<tr><td>' + h(k) + '</td><td>' + h(typeof ep[k] === "object" ? JSON.stringify(ep[k]) : String(ep[k])) + '</td></tr>';
-          }
-          doc += '</tbody></table>';
-        }
-
-        // Items table
-        if (items.length) {
-          const allKeys = new Set();
-          items.forEach((it) => Object.keys(it).forEach((k) => { if (it[k] != null && it[k] !== "") allKeys.add(k); }));
-          const cols = Array.from(allKeys);
-          doc += '<p class="sub-label">Items (' + items.length + ')</p>';
-          doc += '<table class="data-table"><thead><tr>';
-          for (const c of cols) doc += '<th>' + h(c) + '</th>';
-          doc += '</tr></thead><tbody>';
-          for (const it of items) {
-            doc += '<tr>';
-            for (const c of cols) doc += '<td>' + h(it[c] != null ? (typeof it[c] === "object" ? JSON.stringify(it[c]) : String(it[c])) : "") + '</td>';
-            doc += '</tr>';
-          }
-          doc += '</tbody></table>';
-        }
-
-        // User data
-        if (ud) {
-          doc += '<p class="sub-label">User Data (Enhanced Conversions)</p>';
-          doc += '<table class="data-table"><thead><tr><th>Field</th><th>Value (hashed)</th></tr></thead><tbody>';
-          for (const [k, v] of Object.entries(ud)) {
-            if (v) doc += '<tr><td>' + h(k) + '</td><td><code>' + h(v) + '</code></td></tr>';
-          }
-          doc += '</tbody></table>';
-        }
-
-        doc += '</div>'; // payload-block
       }
     }
+    doc += '</div>';
 
-    // --- Section 6: Event Timeline ---
-    doc += '<h2>Event Timeline</h2>';
-    doc += '<table class="data-table timeline"><thead><tr><th>Time</th><th>Source</th><th>Event</th><th>Value</th><th>Items</th></tr></thead><tbody>';
+    // ── Footer ──
+    doc += '<div class="report-footer">';
+    doc += 'Generat de Cooked Pixels v1.5.0 &bull; Limitless Agency &bull; ' + h(dateStr);
+    doc += '</div>';
 
-    const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
-    for (const e of sorted) {
-      const src = e.source || "ga4";
-      const ep = e.payload.event_params || {};
-      const items = e.payload.items || [];
-      const val = ep.value != null ? String(ep.value) + (ep.currency ? " " + ep.currency : "") : "";
-      const time = new Date(e.timestamp).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      doc += '<tr>';
-      doc += '<td class="mono">' + h(time) + '</td>';
-      doc += '<td><span class="src-badge" style="background:' + platColor[src] + '20;color:' + platColor[src] + '">' + platName[src] + '</span></td>';
-      doc += '<td class="mono">' + h(e.eventName) + '</td>';
-      doc += '<td class="mono">' + h(val) + '</td>';
-      doc += '<td>' + (items.length || "") + '</td>';
-      doc += '</tr>';
+    doc += '</div>'; // end .report
+    return doc;
+  }
+
+  function buildRecommendations(results, pixelData, ga4Consent, gadsConsent, consentChanges, itemIdAnalysis) {
+    const recs = [];
+    // Platform presence
+    for (const p of [{key:"ga4",label:"GA4"},{key:"gads",label:"Google Ads"},{key:"fb",label:"Meta Pixel"}]) {
+      if (Object.keys(pixelData[p.key].ids).length === 0) {
+        recs.push({ severity: "error", text: "Nu a fost detectat tracking " + p.label + ". Implementati " + p.label + " pentru acoperire completa." });
+      }
+      if (Object.keys(pixelData[p.key].ids).length > 1) {
+        recs.push({ severity: "warning", text: "Au fost detectate mai multe ID-uri " + p.label + ". Verificati configuratia pentru a va asigura ca este intentionat." });
+      }
     }
-    doc += '</tbody></table>';
-
-    // --- Wrap in full HTML ---
-    return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Cooked Pixels Report</title><style>' +
-      reportCSS() +
-      '</style></head><body>' +
-      '<div class="report">' +
-      '<header>' +
-      '<h1>\uD83D\uDD25 Cooked Pixels <span class="subtitle">Ecommerce Tracking Report</span></h1>' +
-      '<div class="meta">' +
-      '<div><strong>Page:</strong> ' + h(pageUrlText) + '</div>' +
-      '<div><strong>Generated:</strong> ' + h(dateStr) + ' at ' + h(timeStr) + '</div>' +
-      '<div><strong>Events:</strong> ' + totalEvents + ' across ' + sourceSet.size + ' platform' + (sourceSet.size > 1 ? 's' : '') + '</div>' +
-      '</div>' +
-      '</header>' +
-      doc +
-      '<footer>Generated by Cooked Pixels v1.5.0 \u2014 Ecommerce Event Inspector</footer>' +
-      '</div>' +
-      '<script>window.onload=function(){window.print()}<\/script>' +
-      '</body></html>';
+    // Consent
+    if (!ga4Consent && !gadsConsent) {
+      recs.push({ severity: "warning", text: "Google Consent Mode v2 nu a fost detectat. Implementati-l pentru conformitate GDPR." });
+    }
+    if (consentChanges.length) {
+      recs.push({ severity: "warning", text: "Starea consent-ului s-a schimbat in timpul sesiunii. Verificati configuratia CMP." });
+    }
+    // Stage errors
+    for (const r of results) {
+      for (const ins of r.insights.filter((i) => i.severity === "error")) {
+        recs.push({ severity: "error", text: ins.message });
+      }
+    }
+    // Item ID issues
+    if (itemIdAnalysis.hasAnyItems) {
+      for (const ins of itemIdAnalysis.insights.filter((i) => i.severity === "error")) {
+        recs.push({ severity: "error", text: ins.message });
+      }
+    }
+    // Enhanced conversions
+    const purchaseResult = results.find((r) => r.stage.key === "purchase");
+    if (purchaseResult) {
+      const gadsUd = purchaseResult.gads && purchaseResult.gads.userData;
+      if (purchaseResult.gads && (!gadsUd || (!gadsUd.em && !gadsUd.ph))) {
+        recs.push({ severity: "info", text: "Activati Enhanced Conversions pentru Google Ads pentru o atribuire mai precisa a conversiilor." });
+      }
+      const fbUd = purchaseResult.fb && purchaseResult.fb.userData;
+      if (purchaseResult.fb && (!fbUd || (!fbUd.em && !fbUd.ph))) {
+        recs.push({ severity: "info", text: "Activati Advanced Matching pentru Meta Pixel pentru un tracking mai bun al conversiilor." });
+      }
+    }
+    // All good
+    if (recs.length === 0) {
+      recs.push({ severity: "ok", text: "Tracking-ul pare corect configurat. Nu au fost detectate probleme." });
+    }
+    return recs.sort((a, b) => {
+      const order = { error: 0, warning: 1, info: 2, ok: 3 };
+      return (order[a.severity] || 3) - (order[b.severity] || 3);
+    });
   }
 
   function reportCSS() {
-    return '*{margin:0;padding:0;box-sizing:border-box}' +
-      'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12px;color:#1a1a1a;background:#fff;padding:20px 30px;line-height:1.5}' +
-      '.report{max-width:900px;margin:0 auto}' +
-      'h1{font-size:20px;font-weight:800;color:#1a1a1a;margin-bottom:4px}' +
-      'h1 .subtitle{font-weight:400;font-size:13px;color:#666;margin-left:8px}' +
-      'h2{font-size:15px;font-weight:700;color:#1a1a1a;margin:24px 0 10px;padding-bottom:6px;border-bottom:2px solid #e5e5e5}' +
-      'h3{font-size:13px;font-weight:700;color:#444;margin:16px 0 8px}' +
-      '.meta{font-size:11px;color:#666;margin:8px 0 20px;display:flex;gap:20px;flex-wrap:wrap}' +
-      'header{border-bottom:3px solid #1a1a1a;padding-bottom:16px;margin-bottom:24px}' +
-      'footer{margin-top:40px;padding-top:12px;border-top:1px solid #e5e5e5;font-size:10px;color:#999;text-align:center}' +
+    return [
+      '*{margin:0;padding:0;box-sizing:border-box}',
+      '.report{background:#1a1a2e;color:#f0f0f5;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.6;padding:0;max-width:210mm;margin:0 auto}',
 
-      // Stage cards
-      '.stage-card{border:1px solid #e0e0e0;border-radius:6px;margin-bottom:12px;overflow:hidden;break-inside:avoid}' +
-      '.stage-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8f8f8;border-bottom:1px solid #e0e0e0}' +
-      '.stage-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}' +
-      '.sev-badge{margin-left:auto;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}' +
+      // Banner
+      '.report-banner{width:100%;text-align:center;background:#1e1040;padding:24px 20px 16px}',
+      '.report-banner img{max-width:280px;height:auto}',
+
+      // Header
+      '.report-header{padding:20px 28px 16px;border-bottom:1px solid #2d2d50}',
+      'h1{font-size:22px;font-weight:700;color:#f0f0f5;margin-bottom:8px;letter-spacing:0.3px}',
+      '.report-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#a0a0b4}',
+      '.report-meta span{white-space:nowrap}',
+
+      // Section
+      '.section{padding:20px 28px 8px;break-inside:avoid}',
+      'h2{font-size:16px;font-weight:700;color:#07F2C7;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid #2d2d50;letter-spacing:0.3px}',
+
+      // Summary grid
+      '.summary-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}',
+      '.summary-card{flex:1;min-width:140px;background:#232340;border:1px solid #2d2d50;border-radius:8px;padding:12px 16px}',
+      '.summary-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#6e6e82;margin-bottom:8px}',
+      '.summary-pills{display:flex;gap:6px;flex-wrap:wrap}',
+      '.summary-platforms{display:flex;flex-direction:column;gap:6px}',
+
+      // Pills
+      '.pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px}',
+      '.pill-error{background:rgba(239,68,68,0.15);color:#ef4444}',
+      '.pill-warn{background:rgba(246,207,18,0.15);color:#F6CF12}',
+      '.pill-ok{background:rgba(7,242,199,0.15);color:#07F2C7}',
+      '.pill-info{background:rgba(139,156,247,0.15);color:#8B9CF7}',
+      '.plat-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px}',
+      '.plat-missing{background:rgba(110,110,130,0.15);color:#6e6e82}',
+
+      // Funnel grid
+      '.funnel-grid{background:#232340;border:1px solid #2d2d50;border-radius:8px;overflow:hidden;margin-bottom:8px}',
+      '.funnel-grid table{width:100%;border-collapse:collapse}',
+      '.funnel-grid th{padding:8px 12px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;color:#6e6e82;background:#1e1e36;border-bottom:1px solid #2d2d50}',
+      '.funnel-grid th:first-child{text-align:left}',
+      '.funnel-grid td{padding:6px 12px;text-align:center;font-size:12px;border-bottom:1px solid #2a2a48}',
+      '.funnel-grid td:first-child{text-align:left;font-weight:600;color:#f0f0f5}',
+      '.funnel-grid tr:last-child td{border-bottom:none}',
+      '.hit-cell{color:#07F2C7;font-weight:700}',
+      '.miss-cell{color:#6e6e82}',
+      '.na-cell{color:#4a4a60;font-style:italic;font-size:11px}',
+
+      // Platform subtitle
+      '.plat-subtitle{display:flex;align-items:center;gap:10px;margin:20px 0 8px;padding-bottom:6px}',
+      '.plat-subtitle-text{font-size:15px;font-weight:700;color:#f0f0f5;letter-spacing:0.2px}',
+      '.src-badge{display:inline-block;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap}',
+      '.src-badge-lg{font-size:11px;padding:4px 10px;border-radius:5px}',
+
+      // Events table
+      '.events-table{width:100%;border-collapse:collapse;background:#232340;border:1px solid #2d2d50;border-radius:8px;overflow:hidden;margin-bottom:6px}',
+      '.events-table thead th{padding:10px 14px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#6e6e82;background:#1e1e36;border-bottom:1px solid #2d2d50}',
+      '.events-table tbody td{padding:10px 14px;border-bottom:1px solid #2a2a48;font-size:13px;vertical-align:top}',
+      '.events-table tbody tr:last-child td{border-bottom:none}',
+      '.row-num{color:#6e6e82;font-size:12px;width:32px;text-align:center}',
+      '.evt-name{font-weight:700;color:#f0f0f5;font-size:14px}',
+      '.config-cell{color:#a0a0b4;font-size:12px}',
+      '.desc-cell{color:#8888a0;font-size:12px}',
+      '.status-cell{text-align:center;width:32px}',
+      '.status-ok{color:#07F2C7;font-weight:700;font-size:16px}',
+      '.status-miss{color:#ef4444;font-size:14px;opacity:0.6}',
+      '.row-dim{opacity:0.45}',
+      '.mono{font-family:"SF Mono","Fira Code",Consolas,monospace}',
+
+      // Payload fields
+      '.payload-row td{padding:0 14px 10px !important;border-bottom:1px solid #2a2a48 !important}',
+      '.payload-data{border-left:2px solid #2d2d50;margin-left:4px;padding-left:12px}',
+      '.payload-fields{display:flex;flex-wrap:wrap;gap:4px 16px}',
+      '.pf{display:flex;flex-direction:column;min-width:80px}',
+      '.pf-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#6e6e82;margin-bottom:1px}',
+      '.pf-val{font-size:12px;color:#a0a0b4}',
+      '.pf-value-hl .pf-val{color:#07F2C7;font-weight:600}',
+      '.pf-txn-hl .pf-val{color:#8B5CF6;font-weight:600}',
+      '.pf-id-hl .pf-val{color:#F6CF12}',
+
+      // Download button (blob page)
+      '.download-bar{position:fixed;top:0;left:0;right:0;background:#1e1040;padding:10px 24px;display:flex;align-items:center;gap:12px;z-index:9999;border-bottom:2px solid #07F2C7}',
+      '.download-bar span{color:#a0a0b4;font-size:12px}',
+      '.btn-download{background:#07F2C7;color:#1a1a2e;border:none;padding:8px 20px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}',
+      '.btn-download:hover{background:#05d9b2}',
+      '.btn-download:disabled{opacity:0.6;cursor:wait}',
+      '.report-spacer{height:52px}',
+
+      // Pixel cards
+      '.pixel-card{background:#232340;border:1px solid #2d2d50;border-radius:8px;padding:12px 16px;margin-bottom:10px;break-inside:avoid}',
+      '.pixel-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}',
+      '.pixel-warn{color:#f59e0b;font-size:11px;font-weight:700;margin-left:auto}',
+      '.pixel-id-row{display:flex;align-items:center;gap:12px;padding:4px 0}',
+      '.pixel-id{font-size:13px;font-weight:600;color:#f0f0f5}',
+      '.pixel-count{font-size:11px;color:#a0a0b4}',
+
+      // Consent table
+      '.consent-table{width:100%;border-collapse:collapse;background:#232340;border:1px solid #2d2d50;border-radius:8px;overflow:hidden}',
+      '.consent-table thead th{padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;color:#6e6e82;background:#1e1e36;border-bottom:1px solid #2d2d50}',
+      '.consent-table tbody td{padding:6px 12px;border-bottom:1px solid #2a2a48;font-size:12px}',
+      '.consent-table tbody tr:last-child td{border-bottom:none}',
+      '.consent-pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 10px;border-radius:12px}',
+      '.consent-granted{background:rgba(7,242,199,0.15);color:#07F2C7}',
+      '.consent-denied{background:rgba(239,68,68,0.15);color:#ef4444}',
+      '.consent-not_set{background:rgba(110,110,130,0.15);color:#6e6e82}',
+      '.consent-unknown{background:rgba(110,110,130,0.15);color:#6e6e82}',
+      '.consent-discrepancy{background:rgba(245,158,11,0.15);color:#f59e0b}',
+      '.consent-detail{font-size:11px;color:#a0a0b4;margin-left:6px}',
+      '.consent-raw-section{margin-top:14px}',
+      '.consent-raw-title{font-size:13px;font-weight:700;color:#a0a0b4;margin-bottom:10px}',
+      '.consent-raw-card{background:#232340;border:1px solid #2d2d50;border-radius:8px;padding:12px 16px;margin-bottom:10px;break-inside:avoid}',
+      '.consent-raw-plat{font-size:13px;font-weight:700;margin-bottom:8px}',
+      '.consent-raw-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}',
+      '.consent-raw-label{font-size:10px;font-weight:700;text-transform:uppercase;color:#6e6e82;width:28px}',
+      '.consent-raw-value{font-size:12px;color:#f0f0f5;background:#1e1e36;padding:3px 8px;border-radius:4px}',
+      '.consent-raw-decoded{display:flex;flex-wrap:wrap;gap:6px 12px;margin:6px 0 4px;padding-left:36px}',
+      '.consent-decoded-item{font-size:11px;color:#a0a0b4}',
+      '.consent-decoded-item code{background:#1e1e36;padding:1px 4px;border-radius:3px;color:#07F2C7;font-size:10px}',
+      '.consent-legend{font-size:10px;color:#6e6e82;margin-top:8px;padding:8px 12px;background:#1e1e36;border-radius:6px;line-height:1.6}',
+      '.consent-changes{background:#232340;border:1px solid #2d2d50;border-radius:8px;padding:10px 16px;margin-top:10px}',
+      '.changes-title{font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:6px}',
+      '.change-row{font-size:11px;color:#a0a0b4;padding:2px 0}',
+
+      // Stage cards (insights)
+      '.stage-card{background:#232340;border:1px solid #2d2d50;border-radius:8px;margin-bottom:10px;overflow:hidden;break-inside:avoid}',
+      '.stage-header{display:flex;align-items:center;gap:8px;padding:10px 16px;background:#1e1e36;border-bottom:1px solid #2d2d50}',
+      '.stage-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}',
+      '.stage-header strong{color:#f0f0f5;font-size:13px}',
+      '.sev-badge{margin-left:auto;font-size:10px;font-weight:700;padding:2px 10px;border-radius:12px}',
 
       // Platform table
-      '.plat-table{width:100%;border-collapse:collapse}' +
-      '.plat-table td{padding:5px 12px;border-bottom:1px solid #f0f0f0;font-size:11px}' +
-      '.plat-name{font-weight:700;font-size:10px;width:80px;white-space:nowrap}' +
-      '.plat-evt{font-family:"SF Mono",Consolas,monospace;font-weight:600}' +
-      '.plat-vals{font-family:"SF Mono",Consolas,monospace;color:#555}' +
-      '.plat-na{color:#999;font-style:italic}' +
+      '.plat-table{width:100%;border-collapse:collapse}',
+      '.plat-table td{padding:6px 16px;border-bottom:1px solid #2a2a48;font-size:12px}',
+      '.plat-table tr:last-child td{border-bottom:none}',
+      '.plat-name{font-weight:700;font-size:11px;width:90px;white-space:nowrap}',
+      '.plat-evt{font-family:"SF Mono","Fira Code",Consolas,monospace;font-weight:600;color:#f0f0f5}',
+      '.plat-vals{font-family:"SF Mono","Fira Code",Consolas,monospace;color:#a0a0b4;font-size:11px}',
+      '.plat-na{color:#6e6e82;font-style:italic}',
+      '.id-count{color:#6e6e82;font-size:11px}',
 
       // Enhanced Conversions bar
-      '.ec-bar{display:flex;align-items:center;gap:16px;padding:6px 12px;background:#f8f8f8;border-top:1px solid #e0e0e0;font-size:11px}' +
-      '.ec-title{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#888}' +
-      '.ec-plat{display:inline-flex;align-items:center;gap:4px}' +
-      '.ec-ok{color:#059669;font-weight:700}' +
-      '.na{color:#999;font-size:10px}' +
+      '.ec-bar{display:flex;align-items:center;gap:16px;padding:8px 16px;background:#1e1e36;border-top:1px solid #2d2d50;font-size:11px}',
+      '.ec-title{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#6e6e82}',
+      '.ec-plat{display:inline-flex;align-items:center;gap:4px;color:#f0f0f5}',
+      '.ec-ok{color:#07F2C7;font-weight:700}',
+      '.ec-na{color:#6e6e82;font-size:10px;font-style:italic}',
 
       // Findings
-      '.findings{padding:6px 12px;border-top:1px solid #e0e0e0;background:#fafafa}' +
-      '.finding{font-size:11px;padding:2px 0}' +
+      '.findings{padding:8px 16px;border-top:1px solid #2d2d50;background:#1e1e36}',
+      '.finding{font-size:11px;padding:3px 0;line-height:1.5}',
 
-      // Data tables
-      '.data-table{width:100%;border-collapse:collapse;margin:4px 0 12px;font-size:11px}' +
-      '.data-table th{background:#f5f5f5;text-align:left;padding:4px 8px;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:0.3px;color:#555;border-bottom:2px solid #e0e0e0}' +
-      '.data-table td{padding:3px 8px;border-bottom:1px solid #f0f0f0;font-family:"SF Mono",Consolas,monospace;font-size:10.5px;word-break:break-all}' +
-      '.data-table tr:nth-child(even){background:#fafafa}' +
+      // Recommendations
+      '.rec-card{display:flex;align-items:flex-start;gap:10px;background:#232340;border:1px solid #2d2d50;border-radius:8px;padding:10px 16px;margin-bottom:8px;font-size:12px;line-height:1.5;break-inside:avoid}',
+      '.rec-card.rec-error{border-left:3px solid #ef4444}',
+      '.rec-card.rec-warning{border-left:3px solid #F6CF12}',
+      '.rec-card.rec-info{border-left:3px solid #8B9CF7}',
+      '.rec-card.rec-ok{border-left:3px solid #07F2C7}',
+      '.rec-icon{flex-shrink:0;font-size:14px;line-height:1.4}',
 
-      // Payload blocks
-      '.payload-block{margin-bottom:16px;break-inside:avoid}' +
-      '.payload-header{padding:6px 10px;background:#f8f8f8;border-radius:4px;font-size:11px;margin-bottom:4px}' +
-      '.payload-header code{font-family:"SF Mono",Consolas,monospace;font-weight:600}' +
-      '.tag{font-size:9px;padding:1px 6px;background:#e8e8e8;border-radius:3px;color:#555}' +
-      '.sub-label{font-size:10px;font-weight:700;color:#555;margin:8px 0 2px;text-transform:uppercase;letter-spacing:0.3px}' +
-      '.src-badge{font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;white-space:nowrap}' +
-      '.mono{font-family:"SF Mono",Consolas,monospace}' +
+      // No data
+      '.no-data{color:#6e6e82;font-style:italic;font-size:12px;padding:12px 0}',
 
-      // Timeline
-      '.timeline td{padding:2px 8px}' +
-
-      // Pixel Inspector section
-      '.pixel-section{border:1px solid #e0e0e0;border-radius:6px;margin-bottom:12px;padding:10px 12px;break-inside:avoid}' +
-      '.pixel-plat-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px}' +
-      '.pixel-warn{color:#f59e0b;font-size:10px;font-weight:700;margin-left:auto}' +
-
-      // Check Matrix grid
-      '.check-grid td{text-align:center;font-size:10.5px}' +
-      '.check-grid td:first-child{text-align:left}' +
-      '.cm-report-hit{color:#059669;font-weight:600}' +
-      '.cm-report-miss{color:#999;font-size:14px}' +
-      '.cm-report-na{color:#999;font-style:italic}' +
-
-      // Consent Mode
-      '.consent-granted{color:#059669;font-weight:700}' +
-      '.consent-denied{color:#ef4444;font-weight:700}' +
-      '.consent-not_set{color:#999;font-weight:600}' +
-      '.consent-unknown{color:#999;font-style:italic}' +
-      '.consent-discrepancy{color:#f59e0b;font-weight:700}' +
-      '.consent-raw{border:1px solid #e0e0e0;border-radius:4px;padding:8px 12px;margin-bottom:8px;break-inside:avoid}' +
-      '.consent-raw-value{font-size:11px;background:#f5f5f5;padding:4px 8px;border-radius:3px;margin:4px 0}' +
-      '.consent-decoded{font-size:10px;color:#666;padding:2px 8px;line-height:1.6}' +
-      '.consent-note{font-size:10px;color:#888;font-style:italic;margin-top:8px;padding:6px 10px;background:#f8f8f8;border-radius:4px}' +
-
-      // Shared utility
-      '.no-data{color:#999;font-style:italic;font-size:11px;padding:8px 0}' +
-
-      // Print
-      '@media print{body{padding:10px 15px}h2{break-before:avoid}.stage-card{break-inside:avoid}.payload-block{break-inside:avoid}.pixel-section{break-inside:avoid}.consent-raw{break-inside:avoid}.check-grid{break-inside:avoid}}' +
-      '@page{margin:15mm 12mm;size:A4}';
+      // Footer
+      '.report-footer{padding:16px 28px;text-align:center;font-size:10px;color:#6e6e82;border-top:1px solid #2d2d50;margin-top:8px}',
+    ].join('\n');
   }
 
   // ------------------------------------------------------------------
