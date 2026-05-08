@@ -18,6 +18,11 @@
   let insightsViewActive = false;
   let consentViewActive = false;
   let pixelViewActive = false;
+  let userRole = null; // "data" | "ppc" | null
+
+  // --- Webhook config ---
+  const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyZXWN8M1Gk4hMojTj-2_9U34XF4h83nIfYR8ZIgl-ZWgxPTZ8R88cUBV5EjFmvkY-N/exec";
+  const WEBHOOK_TOKEN = "cpx_lms_2026_k8Fj2mNx9pQrVw4TzYhB";
 
   /** Identity fingerprint — mirrors background.js identityFingerprint(). */
   function _identityFP(e) {
@@ -80,6 +85,9 @@
   const pixelViewBtn = document.getElementById("pixelViewBtn");
   const sourceToggle = document.querySelector(".source-toggle");
   const filtersBar = document.querySelector(".filters");
+  const roleScreen = document.getElementById("roleScreen");
+  const appContainer = document.getElementById("appContainer");
+  const roleSwitchBtn = document.getElementById("roleSwitchBtn");
 
   const FILTER_MAP = {
     all: null,
@@ -91,10 +99,64 @@
   };
 
   // ------------------------------------------------------------------
+  // Role Selection
+  // ------------------------------------------------------------------
+
+  function showRoleScreen() {
+    roleScreen.style.display = "flex";
+    appContainer.style.display = "none";
+  }
+
+  function applyRole(role) {
+    userRole = role;
+    roleScreen.style.display = "none";
+    appContainer.style.display = "flex";
+
+    if (role === "ppc") {
+      appContainer.classList.add("ppc-mode");
+    } else {
+      appContainer.classList.remove("ppc-mode");
+    }
+  }
+
+  function selectRole(role) {
+    userRole = role;
+    chrome.storage.local.set({ _userRole: role });
+    applyRole(role);
+    startListening();
+  }
+
+  // Role card click handlers
+  roleScreen.querySelectorAll(".role-card").forEach(function (card) {
+    card.addEventListener("click", function () {
+      selectRole(card.dataset.role);
+    });
+  });
+
+  // Role switch button
+  roleSwitchBtn.addEventListener("click", function () {
+    if (currentTabId) {
+      chrome.runtime.sendMessage({ type: "CLEAR_EVENTS", tabId: currentTabId });
+    }
+    events = [];
+    expandedCards.clear();
+    userRole = null;
+    chrome.storage.local.remove("_userRole");
+
+    // Reset view states
+    checkViewActive = false;
+    insightsViewActive = false;
+    consentViewActive = false;
+    pixelViewActive = false;
+
+    showRoleScreen();
+  });
+
+  // ------------------------------------------------------------------
   // Init
   // ------------------------------------------------------------------
 
-  async function init() {
+  async function startListening() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
 
@@ -117,6 +179,19 @@
         render();
       }
     );
+  }
+
+  async function init() {
+    const stored = await chrome.storage.local.get("_userRole");
+    userRole = stored._userRole || null;
+
+    if (!userRole) {
+      showRoleScreen();
+      return;
+    }
+
+    applyRole(userRole);
+    startListening();
   }
 
   // ------------------------------------------------------------------
@@ -357,6 +432,11 @@
 
   function render() {
     countAll.textContent = events.length;
+
+    if (userRole === "ppc") {
+      renderCheckMatrix();
+      return;
+    }
 
     if (pixelViewActive) {
       renderPixelView();
@@ -809,8 +889,172 @@
     }
 
     h += '</div>';
+
+    if (userRole === "ppc") {
+      h += '<button class="ppc-support-btn" id="ppcSupportBtn">'
+        + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>'
+        + ' Request Support</button>';
+    }
+
     emptyState.style.display = "none";
     eventList.innerHTML = h;
+
+    if (userRole === "ppc") {
+      var supportBtn = document.getElementById("ppcSupportBtn");
+      if (supportBtn) {
+        supportBtn.addEventListener("click", showSupportForm);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // PPC Support Request
+  // ------------------------------------------------------------------
+
+  function showSupportForm() {
+    var h = '<div class="ppc-support-form">';
+    h += '<button class="ppc-support-back" id="ppcBackBtn">'
+      + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>'
+      + ' Back to Matrix</button>';
+    h += '<h3 class="ppc-support-title">Request Support</h3>';
+    h += '<p class="ppc-support-desc">Describe the issue and we\'ll get back to you.</p>';
+    h += '<label class="ppc-support-label">Name</label>';
+    h += '<input type="text" class="ppc-support-input" id="ppcName" placeholder="Your name">';
+    h += '<label class="ppc-support-label">Send to</label>';
+    h += '<input type="email" class="ppc-support-input" id="ppcEmail" placeholder="specialist@company.com">';
+    h += '<label class="ppc-support-label">Message</label>';
+    h += '<textarea class="ppc-support-textarea" id="ppcMessage" placeholder="Describe what you found..." rows="4"></textarea>';
+    h += '<button class="ppc-support-send" id="ppcSendBtn">Send Request</button>';
+    h += '<p class="ppc-support-status" id="ppcStatus"></p>';
+    h += '</div>';
+
+    eventList.innerHTML = h;
+
+    document.getElementById("ppcBackBtn").addEventListener("click", function () {
+      render();
+    });
+
+    document.getElementById("ppcSendBtn").addEventListener("click", submitSupportRequest);
+  }
+
+  function generateMatrixHtml() {
+    var lookup = {};
+    for (var i = 0; i < PLATFORMS.length; i++) lookup[PLATFORMS[i].key] = {};
+    for (var j = 0; j < events.length; j++) {
+      var src = events[j].source || "ga4";
+      if (!lookup[src]) continue;
+      var en = events[j].eventName;
+      lookup[src][en] = (lookup[src][en] || 0) + 1;
+    }
+
+    var PLATFORM_EVENTS = {
+      ga4: ["page_view","view_item","view_item_list","select_item","add_to_cart","remove_from_cart","view_cart","begin_checkout","add_shipping_info","add_payment_info","purchase"],
+      gads: ["page_view","view_item","add_to_cart","begin_checkout","purchase","conversion"],
+      fb: ["PageView","ViewContent","Search","AddToWishlist","AddToCart","InitiateCheckout","AddPaymentInfo","Purchase"],
+    };
+
+    var t = "<table style='width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px'>";
+    t += "<tr style='background:#232340'>";
+    t += "<td style='padding:8px 10px;color:#a0a0b4;font-weight:700;border:1px solid #2d2d50'>Event</td>";
+    t += "<td style='padding:8px 10px;color:#7C6BF0;font-weight:700;text-align:center;border:1px solid #2d2d50'>GA4</td>";
+    t += "<td style='padding:8px 10px;color:#F6CF12;font-weight:700;text-align:center;border:1px solid #2d2d50'>Google Ads</td>";
+    t += "<td style='padding:8px 10px;color:#1877F2;font-weight:700;text-align:center;border:1px solid #2d2d50'>Meta</td>";
+    t += "</tr>";
+
+    for (var c = 0; c < CHECK_MATRIX.length; c++) {
+      var cat = CHECK_MATRIX[c];
+      t += "<tr style='background:#1a1a2e'>";
+      t += "<td style='padding:8px 10px;color:#f0f0f5;font-weight:600;border:1px solid #2d2d50'>" + cat.label + "</td>";
+
+      for (var p = 0; p < PLATFORMS.length; p++) {
+        var plat = PLATFORMS[p];
+        var platEvts = PLATFORM_EVENTS[plat.key] || [];
+        var canMatch = cat.events.some(function (ev) { return platEvts.indexOf(ev) >= 0; });
+
+        if (!canMatch) {
+          t += "<td style='padding:8px 10px;text-align:center;color:#6e6e82;font-style:italic;border:1px solid #2d2d50'>N/A</td>";
+          continue;
+        }
+
+        var total = 0;
+        for (var e = 0; e < cat.events.length; e++) {
+          total += (lookup[plat.key][cat.events[e]] || 0);
+        }
+
+        if (total > 0) {
+          t += "<td style='padding:8px 10px;text-align:center;color:#4CAF50;font-weight:700;border:1px solid #2d2d50'>&#10004; " + total + "</td>";
+        } else {
+          t += "<td style='padding:8px 10px;text-align:center;color:#ef4444;border:1px solid #2d2d50'>&#10008;</td>";
+        }
+      }
+      t += "</tr>";
+    }
+    t += "</table>";
+    return t;
+  }
+
+  function submitSupportRequest() {
+    var nameEl = document.getElementById("ppcName");
+    var emailEl = document.getElementById("ppcEmail");
+    var msgEl = document.getElementById("ppcMessage");
+    var sendBtn = document.getElementById("ppcSendBtn");
+    var statusEl = document.getElementById("ppcStatus");
+
+    var name = nameEl.value.trim();
+    var email = emailEl.value.trim();
+    var message = msgEl.value.trim();
+
+    if (!name || !email || !message) {
+      statusEl.textContent = "Please fill in all fields.";
+      statusEl.className = "ppc-support-status ppc-support-error";
+      return;
+    }
+
+    sendBtn.disabled = true;
+    sendBtn.textContent = "Sending...";
+    statusEl.textContent = "";
+    statusEl.className = "ppc-support-status";
+
+    var domain = (pageUrl.textContent || "unknown").replace(/\/.*$/, "");
+
+    fetch(WEBHOOK_URL, {
+      method: "POST",
+      redirect: "follow",
+      body: JSON.stringify({
+        token: WEBHOOK_TOKEN,
+        domain: domain,
+        name: name,
+        email: email,
+        message: message,
+        matrixHtml: generateMatrixHtml(),
+      }),
+    })
+      .then(function (res) { return res.text(); })
+      .then(function (text) {
+        var data;
+        try { data = JSON.parse(text); } catch (e) { data = {}; }
+
+        if (data.error) {
+          statusEl.textContent = "Error: " + data.error;
+          statusEl.className = "ppc-support-status ppc-support-error";
+          sendBtn.disabled = false;
+          sendBtn.textContent = "Send Request";
+          return;
+        }
+
+        eventList.innerHTML = '<div class="ppc-support-success">'
+          + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="16 8 10 16 7 13"/></svg>'
+          + '<p class="ppc-support-success-title">Request sent!</p>'
+          + '<p class="ppc-support-success-text">We\'ll get back to you at ' + esc(email) + '</p>'
+          + '</div>';
+        setTimeout(function () { render(); }, 3000);
+      })
+      .catch(function (err) {
+        statusEl.textContent = "Failed to send. Check your connection.";
+        statusEl.className = "ppc-support-status ppc-support-error";
+        sendBtn.disabled = false;
+        sendBtn.textContent = "Send Request";
+      });
   }
 
   // ------------------------------------------------------------------

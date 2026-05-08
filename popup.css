@@ -1887,3 +1887,300 @@ body {
   max-width: 280px;
   line-height: 1.5;
 }
+
+/* === Role Selection Screen === */
+.role-screen {
+  width: 600px;
+  height: 600px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+}
+
+.role-screen-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.role-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.role-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.role-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: -0.02em;
+}
+
+.role-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.role-cards {
+  display: flex;
+  gap: 16px;
+}
+
+.role-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 220px;
+  padding: 28px 20px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all 200ms ease;
+  font-family: inherit;
+  color: var(--text-primary);
+}
+
+.role-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.role-card:active {
+  transform: translateY(0);
+}
+
+.role-card-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.role-card-icon-data {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.role-card-icon-ppc {
+  background: var(--gold-dim);
+  color: var(--gold);
+}
+
+.role-card:hover .role-card-icon-data {
+  background: rgba(7, 242, 199, 0.25);
+}
+
+.role-card:hover .role-card-icon-ppc {
+  background: rgba(246, 207, 18, 0.25);
+}
+
+.role-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.role-card-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* === PPC Mode — Hide everything except header + matrix === */
+.app.ppc-mode .source-toggle {
+  display: none;
+}
+
+.app.ppc-mode .filters {
+  display: none;
+}
+
+.app.ppc-mode .status-bar {
+  display: none;
+}
+
+.app.ppc-mode #exportBtn {
+  display: none;
+}
+
+.app.ppc-mode #clearBtn {
+  display: none;
+}
+
+/* === PPC Support Request === */
+.ppc-support-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: calc(100% - 8px);
+  margin: 8px 4px 4px;
+  padding: 10px 16px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.ppc-support-btn:hover {
+  background: var(--accent-dim);
+}
+
+.ppc-support-form {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ppc-support-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.ppc-support-back:hover {
+  color: var(--text-primary);
+}
+
+.ppc-support-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.ppc-support-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
+.ppc-support-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ppc-support-input,
+.ppc-support-textarea {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.ppc-support-input:focus,
+.ppc-support-textarea:focus {
+  border-color: var(--accent);
+}
+
+.ppc-support-input::placeholder,
+.ppc-support-textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.ppc-support-textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+.ppc-support-send {
+  margin-top: 4px;
+  padding: 10px 20px;
+  background: var(--accent);
+  color: var(--bg-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.ppc-support-send:hover {
+  background: var(--accent-hover);
+}
+
+.ppc-support-send:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.ppc-support-status {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin: 0;
+  min-height: 16px;
+}
+
+.ppc-support-error {
+  color: var(--color-danger);
+}
+
+.ppc-support-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.ppc-support-success-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.ppc-support-success-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
